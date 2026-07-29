@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\"",
+            "timeout": 60,
+            "statusMessage": "Recovering session context after compaction"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/pre_compact_docs_reminder.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

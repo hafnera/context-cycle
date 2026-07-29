@@ -1,0 +1,13 @@
+{
+  "name": "hafnera",
+  "owner": {
+    "name": "Alexander Hafner"
+  },
+  "plugins": [
+    {
+      "name": "context-cycle",
+      "source": "./",
+      "description": "Never lose context to compaction: condensed session imports for Claude Code & Codex CLI, a pre-compaction documentation checkpoint, and automatic post-compact context restore."
+    }
+  ]
+}
