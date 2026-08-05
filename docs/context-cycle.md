@@ -66,6 +66,12 @@ sequenceDiagram
     end
 ```
 
+## Injection mechanics: why the restore is chunked
+
+Claude Code silently replaces any single hook output larger than **~10–12k characters** (empirically measured; undocumented) with a 2 KB preview plus a file path — the agent would then have to Read the file itself, which in practice happens incompletely. That is why `hooks/hooks.json` registers the restore script **40 times** (`--part i --parts 40`): every part deterministically extracts the same transcript and prints only its own ≤ 9k-character slice, labeled `part i/M` (parts may arrive out of order — hooks run in parallel — so the labels plus a small stagger sleep keep them reassemblable). This injects up to ~360 KB (~90k tokens) of transcript **directly into context, with no Read step**.
+
+**Overflow policy (newest wins):** if the transcript needs more than the 40 slots, the **most recent** content is always injected directly, in chronological order with the newest parts last. Slot 1 becomes an overflow notice; the oldest chunks (including the session's original request) are saved to `/tmp/claude-session-restore-<session-id>.md` with a mandatory read-it-completely instruction.
+
 ## Key design decisions
 
 1. **Why not a PreCompact hook?** `PreCompact` fires when compaction is already underway — its output never reaches the model, and there is no token headroom left for documentation work. Hence the 80% approximation via `PostToolUse` with a real token measurement from the session file's usage block.

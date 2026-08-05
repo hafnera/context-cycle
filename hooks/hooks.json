@@ -6,9 +6,204 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\"",
-            "timeout": 60,
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 1 --parts 40",
+            "timeout": 90,
             "statusMessage": "Recovering session context after compaction"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 2 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 3 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 4 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 5 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 6 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 7 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 8 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 9 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 10 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 11 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 12 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 13 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 14 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 15 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 16 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 17 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 18 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 19 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 20 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 21 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 22 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 23 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 24 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 25 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 26 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 27 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 28 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 29 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 30 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 31 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 32 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 33 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 34 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 35 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 36 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 37 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 38 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 39 --parts 40",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/session-context/hooks/on_compact.py\" --part 40 --parts 40",
+            "timeout": 90
           }
         ]
       }
