@@ -35,7 +35,9 @@ The trick behind step 5: the condensed extract keeps exactly two things — **yo
 /plugin install context-cycle@hafnera
 ```
 
-That's it — the skill and both hooks are active in all projects. (For a private repo, your `git` needs GitHub credentials, e.g. via `gh auth login`.)
+That's it — the skill and both hooks are active in all projects (new sessions pick them up automatically). Requires `python3` on the PATH; developed and tested on macOS, should work on Linux, Windows is untested.
+
+To update later: `/plugin` → Manage plugins → update, or `claude plugin update context-cycle@hafnera` on the CLI.
 
 To develop or test from a local checkout instead:
 
