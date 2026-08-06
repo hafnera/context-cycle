@@ -6,9 +6,27 @@ A Claude Code **plugin** that makes sure long agent sessions never lose knowledg
 - **Pre-compaction documentation checkpoint** (PostToolUse hook) — when the context crosses 80% of the effective window, the agent is instructed to update all project documentation (incl. architecture docs and learnings from mistakes), then stop with a numbered next-steps list and ask you to run `/compact`.
 - **Post-compaction context restore** (SessionStart hook) — after every compaction, the full condensed transcript is re-injected automatically, together with an instruction to re-read all project docs and a token-size report. The injection is **chunked** (40 parallel hook slots à ~9 KB) because Claude Code silently swaps any single hook output above ~10–12k chars for a file reference the agent would have to read itself; chunking injects up to ~360 KB directly with no Read step. If a transcript is even larger, the **newest content is always injected** (chronological, newest last) and only the oldest part goes to a file with a read-completely instruction.
 
-> 📖 **[The Context Cycle](docs/context-cycle.md)** — full documentation of how the pieces close the loop, with diagrams.
-
 Everything runs locally (Python 3, stdlib only, no dependencies). Nothing leaves your machine.
+
+## How it works
+
+```mermaid
+flowchart TD
+    A["1 · You and the agent work normally —<br/>tool calls gradually fill the context window"]
+    B["2 · Context reaches 80% ⚠<br/>A hook tells the agent: update ALL project docs now<br/>(incl. architecture docs + learnings from mistakes)"]
+    C["3 · Agent stops on purpose and posts:<br/>✔ what was documented<br/>✔ key findings of the last tool result<br/>✔ numbered list of its planned next steps<br/>✔ “please run /compact now”"]
+    D["4 · You type /compact —<br/>Claude Code shrinks the context to a summary"]
+    E["5 · Plugin hook re-injects the condensed transcript<br/>directly into the fresh context:<br/>every user message + every final answer<br/>(split into ~9 KB parts, so nothing gets cut off)"]
+    F["6 · Agent re-reads the project docs and continues<br/>exactly at step 1 of its own next-steps list"]
+
+    A --> B --> C --> D --> E --> F
+    F -->|"cycle repeats"| A
+    E -.->|"transcript larger than all 40 slots?<br/>newest parts injected directly (newest last),<br/>oldest part saved to a file + must be read completely"| F
+```
+
+The trick behind step 5: the condensed extract keeps exactly two things — **your messages** and the agent's **final answers**. Because the agent writes its plan and the relevant tool findings into its *last answer* (step 3), that answer survives compaction and lands back in context automatically. No knowledge is lost, and the agent never has to (incompletely) re-read anything itself.
+
+> 📖 **[The Context Cycle](docs/context-cycle.md)** — full documentation with detailed flow and sequence diagrams, design rationale, and limitations.
 
 ## Installation
 
