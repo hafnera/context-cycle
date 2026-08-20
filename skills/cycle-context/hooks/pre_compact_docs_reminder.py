@@ -82,6 +82,8 @@ def current_context_tokens(transcript_path):
     for line in reversed(tail.splitlines()):
         if '"usage"' not in line:
             continue
+        if '"isSidechain":true' in line:
+            continue  # subagent usage describes the SUBAGENT's context, not ours
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
