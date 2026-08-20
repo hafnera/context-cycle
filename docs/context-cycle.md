@@ -13,6 +13,7 @@ When an agent's context window fills up, Claude Code compacts the conversation i
 | Extractor | CLI script | [`skills/session-context/scripts/extract_session.py`](../skills/session-context/scripts/extract_session.py) | Distills session files (Claude Code + Codex) down to user messages + final answers |
 | `session-context` skill | Plugin skill | [`skills/session-context/SKILL.md`](../skills/session-context/SKILL.md) | Manual import of sessions as context; also for the running session (`--current`) |
 | Docs-checkpoint reminder | `PostToolUse` hook | [`skills/session-context/hooks/pre_compact_docs_reminder.py`](../skills/session-context/hooks/pre_compact_docs_reminder.py) | Detects the 80% threshold, orders a documentation checkpoint + orderly stop |
+| `doc-checkpoint` skill | Plugin skill | [`skills/doc-checkpoint/SKILL.md`](../skills/doc-checkpoint/SKILL.md) | The same checkpoint on demand, at any context level (`/doc-checkpoint`); arms the once-marker so the 80% reminder stays silent for the cycle |
 | Context restore | `SessionStart(compact)` hook | [`skills/session-context/hooks/on_compact.py`](../skills/session-context/hooks/on_compact.py) | After every compaction, injects the full condensed transcript + docs re-read instruction |
 
 Both hooks are registered automatically by the plugin ([`hooks/hooks.json`](../hooks/hooks.json)) and apply in all projects.

@@ -22,6 +22,7 @@ window is autoCompactWindow from ~/.claude/settings.json if set, else 1M for
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -94,7 +95,43 @@ def current_context_tokens(transcript_path):
     return None
 
 
+def newest_session_of_cwd():
+    """The most recently written session file of the current project (CLI use)."""
+    munged = re.sub(r"[^A-Za-z0-9]", "-", str(Path.cwd().resolve()))
+    project_dir = Path.home() / ".claude" / "projects" / munged
+    files = sorted(project_dir.glob("*.jsonl"),
+                   key=lambda f: f.stat().st_mtime, reverse=True)
+    return files[0] if files else None
+
+
+def cli_mode(mode):
+    """--status: print current context usage. --mark: arm the once-marker so
+    the automatic 80% reminder stays silent for the current cycle (used after
+    a manual documentation checkpoint via the doc-checkpoint skill)."""
+    transcript = newest_session_of_cwd()
+    if transcript is None:
+        print("No session file found for this project.")
+        return
+    tokens = current_context_tokens(str(transcript))
+    window, basis = effective_window()
+    if tokens is None:
+        print("Could not read context usage from the session file.")
+        return
+    if mode == "--status":
+        print(f"Context status: ~{tokens/1000:.0f}k of {window//1000}k tokens "
+              f"({tokens/window*100:.0f}%) — basis: {basis}, "
+              f"checkpoint threshold: {int(REMIND_FRACTION*100)}%")
+    else:
+        marker = Path("/tmp") / f"claude-doc-reminder-{transcript.stem}"
+        marker.write_text(str(tokens))
+        print(f"Marked: automatic checkpoint reminder suppressed for session "
+              f"{transcript.stem[:8]} until after the next compaction.")
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] in ("--status", "--mark"):
+        cli_mode(sys.argv[1])
+        return
     try:
         hook_input = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
