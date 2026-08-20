@@ -1,6 +1,6 @@
 ---
-name: doc-checkpoint
-description: Run the pre-compaction documentation checkpoint manually, at any context level — no need to wait for the automatic 80% trigger. Updates ALL project documentation (incl. architecture docs and learnings from mistakes), then ends the turn with a numbered next-steps list and asks the user to run /compact. Use when the user says "doc checkpoint", "mach einen doku-checkpoint", "sichere den session-stand", "persist the session knowledge now", "checkpoint before compact", or wants to compact soon and lose nothing.
+name: cycle-checkpoint
+description: Run the pre-compaction documentation checkpoint manually, at any context level — no need to wait for the automatic 80% trigger. Updates ALL project documentation (incl. architecture docs and learnings from mistakes), then ends the turn with a numbered next-steps list and asks the user to run /compact. Use when the user says "cycle checkpoint", "doc checkpoint", "mach einen doku-checkpoint", "sichere den session-stand", "persist the session knowledge now", "checkpoint before compact", or wants to compact soon and lose nothing.
 ---
 
 # Manual Documentation Checkpoint
@@ -12,7 +12,7 @@ The same checkpoint the context-cycle plugin triggers automatically at 80% of th
 ### 1. Report context status
 
 ```bash
-python3 "<skill>/../session-context/hooks/pre_compact_docs_reminder.py" --status
+python3 "<skill>/../cycle-context/hooks/pre_compact_docs_reminder.py" --status
 ```
 
 Mention the result (e.g. "~250k of 1000k tokens, 25%") in your final message so the user can judge whether compacting is worth it yet.
@@ -26,7 +26,7 @@ Mention the result (e.g. "~250k of 1000k tokens, 25%") in your final message so 
 ### 3. Suppress the duplicate automatic reminder
 
 ```bash
-python3 "<skill>/../session-context/hooks/pre_compact_docs_reminder.py" --mark
+python3 "<skill>/../cycle-context/hooks/pre_compact_docs_reminder.py" --mark
 ```
 
 This arms the once-per-cycle marker so the automatic 80% reminder stays silent until after the next compaction (the docs are fresh now — a second checkpoint order would be redundant).

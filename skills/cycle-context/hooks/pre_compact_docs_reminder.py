@@ -107,7 +107,7 @@ def newest_session_of_cwd():
 def cli_mode(mode):
     """--status: print current context usage. --mark: arm the once-marker so
     the automatic 80% reminder stays silent for the current cycle (used after
-    a manual documentation checkpoint via the doc-checkpoint skill)."""
+    a manual documentation checkpoint via the cycle-checkpoint skill)."""
     transcript = newest_session_of_cwd()
     if transcript is None:
         print("No session file found for this project.")

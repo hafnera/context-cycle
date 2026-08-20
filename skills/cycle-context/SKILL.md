@@ -1,5 +1,5 @@
 ---
-name: session-context
+name: cycle-context
 description: Import a previous local agent session (Claude Code or Codex CLI) into the current conversation as condensed context — only the user's messages and each turn's final assistant answer, without tool calls, code edits, intermediate steps or thinking. Use when the user wants to continue from, reference, or "load" an earlier session, e.g. "hol den Kontext aus der letzten Session", "import the session where we built X", "what did we discuss yesterday in project Y", "füge die Session von gestern als Kontext hinzu".
 ---
 
