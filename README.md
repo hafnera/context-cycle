@@ -95,6 +95,8 @@ The threshold basis is `autoCompactWindow` **if set**, otherwise the model windo
 
 ## Notes
 
+- **How the 80% is measured (and why it may differ from the UI):** the hook reads the latest *main-context* usage block from the session file (subagent/sidechain usage is ignored — it describes the subagent's own, much smaller context) and compares it against the **raw** window (`autoCompactWindow` if set, else the model window). Claude Code's own context display measures against the **auto-compact point** instead, so its percentage runs ahead — the UI can show ~90% while the raw measure is at ~78%. The hook fires at raw 80%, which is still comfortably before auto-compact (~90%+). If you want it aligned closer to the UI feeling, lower `REMIND_FRACTION` (e.g. `0.75`).
+- Silent hook runs leave no trace in the transcript — below the threshold the reminder produces no output by design. Proof of life after a compaction are the `Recovered session context — part i/M` blocks.
 - Sessions marked `*ACTIVE*` in the list are most likely the currently running one.
 - Codex titles come from `~/.codex/session_index.jsonl` (thread names), Claude titles from the session's `ai-title` entries; fallback is the first user message.
 - Archived Codex sessions (`~/.codex/archived_sessions`) are not scanned currently.
