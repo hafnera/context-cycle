@@ -28,6 +28,7 @@ Stdlib only, no dependencies.
 
 import argparse
 import json
+import os
 import sys as _sys
 _sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
 import re
@@ -300,8 +301,27 @@ def load_cli_subagents(session_path):
     return out
 
 
+def subagent_segments(info):
+    """A subagent resumed several times (SendMessage) shares one transcript:
+    split it at its user prompts into invocation segments, each yielding
+    (handback_message, last_assistant_text)."""
+    segments, current = [], None
+    for e in info.get("entries") or []:
+        if e.get("type") == "user":
+            text, has_tool_result, _ = claude_user_text((e.get("message") or {}).get("content"))
+            resumed = "sent a message while you were working" in text[:120]  # SendMessage resume
+            if text.strip() and not has_tool_result and (not e.get("isMeta") or resumed):
+                current = {"entries": []}
+                segments.append(current)
+        if current is None:
+            current = {"entries": []}
+            segments.append(current)
+        current["entries"].append(e)
+    return [subagent_texts(s) for s in segments] or [(None, None)]
+
+
 def subagent_texts(info):
-    """(handback_message, last_assistant_text) of a subagent's own transcript."""
+    """(handback_message, last_assistant_text) of a subagent transcript (segment)."""
     best_handback, last_text = None, None
     for e in info.get("entries") or []:
         if e.get("type") != "assistant":
@@ -385,7 +405,13 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
         received = (summary or "").strip()
         if received.startswith("Async agent launched"):
             received = ""
-        handback, last_text = subagent_texts(info)
+        segments = subagent_segments(info)
+        n = info.get("emit_count", 0)
+        if os.environ.get("CYCLE_DEBUG"):
+            print(f"[emit] key={key[:14]} n={n} segments={len(segments)} received={received[:50]!r} "
+                  f"seg_last={(segments[min(n, len(segments)-1)][1] or '')[:50]!r}", file=sys.stderr)
+        info["emit_count"] = n + 1   # the n-th block of this agent ↔ its n-th invocation
+        handback, last_text = segments[min(n, len(segments) - 1)]
         candidates = [c.strip() for c in (received, handback, last_text, persisted_hint) if c and c.strip()]
         candidates = [c for c in candidates if not c.startswith("<persisted-output>")] or candidates
         if not candidates:
@@ -482,8 +508,9 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
             for b in blocks_of(entry):
                 if b.get("type") == "tool_result" and b.get("tool_use_id") in subagents:
                     txt = block_text(b)
-                    if txt.lstrip().startswith("Async agent launched"):
-                        continue  # background agent: placed when its report arrives
+                    if txt.lstrip().startswith("Async agent launched") or \
+                            re.match(r'\s*\{"success":\s*true', txt):
+                        continue  # launch / resume confirmation: placed when the report arrives
                     emit_subagent(b["tool_use_id"], txt, ts, read_persisted(txt))
             text, has_tool_result, has_image = claude_user_text(content)
             text = strip_reminders(text)
