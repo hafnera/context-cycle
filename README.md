@@ -2,7 +2,7 @@
 
 A Claude Code **plugin** that makes sure long agent sessions never lose knowledge to context compaction:
 
-- **`cycle-context` skill** — import previous agent sessions (Claude Code CLI, **Claude Desktop** local coding sessions and **claude.ai/code remote sessions** from Desktop's cache on macOS, and Codex CLI) into the current conversation as *condensed* context: only the user's messages and each turn's **final answer** — no tool calls, tool results, code edits, intermediate steps or thinking. An 18 MB session file collapses to ~70 KB of readable context.
+- **`cycle-context` skill** — import previous agent sessions (Claude Code CLI, **Claude Desktop** local coding sessions and **claude.ai/code remote sessions** from Desktop's cache on macOS, and Codex CLI) into the current conversation as *condensed* context: the user's messages, the main agent's **progress notes** (its narration between tool calls) and **final answer** per turn, and every **subagent's result** — the summary the main agent received plus the subagent's **full report**, labeled with the subagent's real name. No tool calls, tool results, code edits or thinking. An 18 MB session file collapses to well under 10% of its size.
 - **Pre-compaction documentation checkpoint** (PostToolUse hook) — when the context crosses 80% of the effective window, the agent is instructed to update all project documentation (incl. architecture docs and learnings from mistakes), then stop with a numbered next-steps list and ask you to run `/compact`. Also available **on demand at any context level** as the `/cycle-checkpoint` skill — same checkpoint, and it suppresses the then-redundant automatic reminder for the current cycle.
 - **Post-compaction context restore** (SessionStart hook) — after every compaction, the full condensed transcript is re-injected automatically, together with an instruction to re-read all project docs and a token-size report. The injection is **chunked** (40 parallel hook slots à ~9 KB) because Claude Code silently swaps any single hook output above ~10–12k chars for a file reference the agent would have to read itself; chunking injects up to ~360 KB directly with no Read step. If a transcript is even larger, the **newest content is always injected** (chronological, newest last) and only the oldest part goes to a file with a read-completely instruction.
 
@@ -74,15 +74,15 @@ python3 skills/cycle-context/scripts/extract_session.py extract f4c4d603 --all-p
 python3 skills/cycle-context/scripts/extract_session.py extract --current
 ```
 
-Key options: `--agent claude|desktop|remote|codex|all`, `--project PATH`, `--all-projects`, `--grep TEXT`, `--current`, `--last N`, `--max-chars N`, `--all-text` (all assistant text of a turn instead of only the final answer), `--json`, `--path FILE`, `-o FILE`.
+Key options: `--agent claude|desktop|remote|codex|all`, `--project PATH`, `--all-projects`, `--grep TEXT`, `--current`, `--last N`, `--max-chars N`, `--final-only` (drop the progress notes, keep only final answers), `--json`, `--path FILE`, `-o FILE`.
 
 ## What the parser keeps and drops
 
-- **Kept:** real user messages, the final assistant answer of each turn, carried-over compact summaries, image markers (`[image attached]`).
+- **Kept:** real user messages; the main agent's progress notes and the final answer of each turn; subagent blocks (`🧭 Subagent «name»`) with the result as received by the main agent and, when it is more than that summary, the subagent's full report — read from its `SubagentHandback` message, its own transcript (`<session>/subagents/agent-*.jsonl` for CLI/Desktop, `parent_tool_use_id` entries in cloud streams) or a locally persisted `tool-results/*.txt` file; carried-over compact summaries; image markers (`[image attached]`).
 - **Kept as one-line markers:** slash commands (`⌘ User ran: /model …`), stop-hook follow-ups, background-task completions and interruptions (`⚙ …`) — they remain as turn boundaries so the *correct* final answer is selected per turn.
 - **Duplicates are removed:** resumed sessions re-append history into the same file; exact `uuid` duplicates are dropped so nothing appears twice.
 - **Rewound branches are removed:** after a `/rewind` (cloud: recorded as a rewind event; CLI: a fork of two user messages under one parent) the abandoned branch is dropped so the transcript reflects the conversation as it actually continued.
-- **Dropped:** `tool_use`/`tool_result`, thinking, subagent sidechains, system reminders, meta/hook noise, IDE context, Codex `environment_context`/`user_instructions`, API errors, empty sessions.
+- **Dropped:** `tool_use`/`tool_result`, thinking, subagent tool traffic, system reminders, meta/hook noise, IDE context, Codex `environment_context`/`user_instructions`, API errors, empty sessions.
 
 ## Tuning
 
@@ -99,6 +99,7 @@ The threshold basis is `autoCompactWindow` **if set**, otherwise the model windo
 
 - **Claude Desktop sessions (macOS):** Desktop's *local* coding sessions are supported (`[desktop]` in the list, titled as in the Desktop app). Desktop only stores metadata itself (`~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json`); the transcript is the matching `<cliSessionId>.jsonl` under `~/.claude/projects`. *Remote* claude.ai/code sessions (`session_…` ids running in cloud sandboxes) are fetched **completely** from the Anthropic API (`/v1/code/sessions/<id>/events`, paginated back to the first event) with the logged-in CLI's OAuth token — no compromise on history. Listed as `[remote]` with `--all-projects`/`--agent remote` (metadata-only rows for speed), addressable by `session_…` or `cse_…` id. If the API is unavailable (offline, logged out), Desktop's IndexedDB cache serves as fallback — it holds only the last ~2.7 MB of events per session (`headCut`, flagged in the extract). The extract's `Source:` line says which path was used.
 - **Transcript retention:** Claude Code deletes CLI transcripts after `cleanupPeriodDays` (default 30!). For a complete long-term history set it high in `~/.claude/settings.json`, e.g. `"cleanupPeriodDays": 3650`.
+- **Workflow agents** (Claude Code's Workflow tool, `subagents/workflows/`) are not yet expanded into subagent blocks.
 - **Windows:** works only inside **WSL**. Native Windows is not supported yet (the hooks rely on `python3` and `/tmp`).
 
 - **How the 80% is measured (and why it may differ from the UI):** the hook reads the latest *main-context* usage block from the session file (subagent/sidechain usage is ignored — it describes the subagent's own, much smaller context) and compares it against the **raw** window (`autoCompactWindow` if set, else the model window). Claude Code's own context display measures against the **auto-compact point** instead, so its percentage runs ahead — the UI can show ~90% while the raw measure is at ~78%. The hook fires at raw 80%, which is still comfortably before auto-compact (~90%+). If you want it aligned closer to the UI feeling, lower `REMIND_FRACTION` (e.g. `0.75`).

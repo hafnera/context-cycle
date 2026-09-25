@@ -10,7 +10,7 @@ When an agent's context window fills up, Claude Code compacts the conversation i
 
 | Component | Type | File | Job |
 |---|---|---|---|
-| Extractor | CLI script | [`skills/cycle-context/scripts/extract_session.py`](../skills/cycle-context/scripts/extract_session.py) | Distills session files (Claude Code CLI, Claude Desktop local sessions, cached claude.ai/code remote sessions, Codex) down to user messages + final answers |
+| Extractor | CLI script | [`skills/cycle-context/scripts/extract_session.py`](../skills/cycle-context/scripts/extract_session.py) | Distills session files (Claude Code CLI, Claude Desktop local sessions, claude.ai/code remote sessions, Codex) down to user messages, the main agent's progress notes + final answers, and subagent summaries + full reports |
 | `cycle-context` skill | Plugin skill | [`skills/cycle-context/SKILL.md`](../skills/cycle-context/SKILL.md) | Manual import of sessions as context; also for the running session (`--current`) |
 | Docs-checkpoint reminder | `PostToolUse` hook | [`skills/cycle-context/hooks/pre_compact_docs_reminder.py`](../skills/cycle-context/hooks/pre_compact_docs_reminder.py) | Detects the 80% threshold, orders a documentation checkpoint + orderly stop |
 | `cycle-checkpoint` skill | Plugin skill | [`skills/cycle-checkpoint/SKILL.md`](../skills/cycle-checkpoint/SKILL.md) | The same checkpoint on demand, at any context level (`/cycle-checkpoint`); arms the once-marker so the 80% reminder stays silent for the cycle |
@@ -34,7 +34,7 @@ flowchart TD
     I --> A
 ```
 
-**The trick in step D:** the extraction keeps exactly two things — user messages and **final answers**. By writing its plan and the relevant tool findings into its last answer, the agent makes them compaction-proof: exactly that answer is re-injected in step H.
+**The trick in step D:** the extraction keeps the conversation itself — user messages, the main agent's notes and **final answers**, subagent reports — but no tool traffic. By writing its plan and the relevant tool findings into its last answer, the agent makes them compaction-proof: exactly that answer is re-injected in step H.
 
 ## The flow as a sequence diagram
 

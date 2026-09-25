@@ -5,7 +5,7 @@ description: Import a previous agent session (Claude Code CLI, Claude Desktop lo
 
 # Session Context Import
 
-Pull a previous local agent session into the current conversation as **condensed context**: only user messages and each turn's final assistant answer. A multi-MB session file typically collapses to a few dozen KB.
+Pull a previous agent session into the current conversation as **condensed context**: the user's messages, the main agent's progress notes (its short narration between tool calls) and final answer per turn, plus every subagent's result — the summary the main agent received *and* the subagent's full report, labeled with the subagent's real name (its task description). Tool calls, tool results and thinking are dropped. A multi-MB session file typically collapses to a few dozen KB.
 
 Supported sources (parsed from local disk, nothing leaves the machine):
 
@@ -63,7 +63,7 @@ Extract options:
 
 - `--last N` — keep only the last N user messages + their answers (**only when the user asked for it**)
 - `--max-chars N` — truncate each message to N chars (**only when the user asked for it**)
-- `--all-text` — keep *all* assistant text of a turn (intermediate status notes too), not just the final answer
+- `--final-only` — only each turn's final answer, without the progress notes (**only when the user asked for it**; the default keeps them)
 - `--current` — the currently running session of this project (see below)
 - `--path FILE` — extract a specific `.jsonl` directly (bypasses discovery)
 - `--json` — structured output instead of markdown

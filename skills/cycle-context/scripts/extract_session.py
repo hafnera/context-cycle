@@ -157,11 +157,11 @@ def is_noise(text, prefixes):
     return any(stripped.startswith(p) for p in prefixes)
 
 
-def parse_claude_session(path, all_text=False):
+def parse_claude_session(path, all_text=True):
     """Return session dict with meta and condensed turns (Claude Code jsonl)."""
     meta = {"agent": "claude", "path": str(path), "session_id": Path(path).stem,
             "cwd": None, "title": None, "first_ts": None, "last_ts": None}
-    return parse_claude_entries(iter_jsonl(path), meta, all_text=all_text)
+    return parse_claude_entries(iter_jsonl(path), meta, all_text=all_text, session_path=path)
 
 
 def linearize_tree(entries):
@@ -194,7 +194,7 @@ def linearize_tree(entries):
         task notification or tool result (those also appear as forks around
         /compact and must not be mistaken for rewinds)."""
         if e.get("type") != "user" or e.get("isMeta") or e.get("isSidechain") \
-                or e.get("isCompactSummary") or e.get("isSynthetic"):
+                or e.get("isCompactSummary") or e.get("isSynthetic") or e.get("parent_tool_use_id"):
             return False
         text, has_tool_result, _ = claude_user_text((e.get("message") or {}).get("content"))
         text = strip_reminders(text).lstrip()
@@ -241,30 +241,178 @@ def apply_rewinds(entries):
     return out
 
 
-def parse_claude_entries(entries, meta, all_text=False):
-    """Condense an iterable of Claude Code-format entries (jsonl lines or the
-    Desktop app's cached remote-session events) into turns."""
+AGENT_TOOL_NAMES = ("Agent", "Task")
+PERSISTED_RE = re.compile(r"Full output saved to:\s*(\S+)")
+AGENT_MSG_RE = re.compile(r'<agent-message from="([^"]+)">', re.DOTALL)
+TASK_ID_RE = re.compile(r"<task-id>(.*?)</task-id>", re.DOTALL)
+TOOL_USE_ID_RE = re.compile(r"<tool-use-id>(.*?)</tool-use-id>", re.DOTALL)
+OUTPUT_FILE_RE = re.compile(r"<output-file>(.*?)</output-file>", re.DOTALL)
+
+
+def blocks_of(entry):
+    content = (entry.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    return [b for b in (content or []) if isinstance(b, dict)]
+
+
+def block_text(block):
+    c = block.get("content") if block.get("type") == "tool_result" else block.get("text")
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return "\n".join(x.get("text", "") for x in c if isinstance(x, dict) and x.get("type") == "text")
+    return ""
+
+
+def read_persisted(text):
+    """`<persisted-output> … Full output saved to: PATH` → file content when
+    the file exists on this machine (CLI/Desktop sessions), else None."""
+    m = PERSISTED_RE.search(text or "")
+    if m and Path(m.group(1)).is_file():
+        try:
+            return Path(m.group(1)).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+    return None
+
+
+def load_cli_subagents(session_path):
+    """<session>/subagents/agent-*.jsonl (+ .meta.json) → {tool_use_id: info}."""
+    out = {}
+    sub_dir = Path(session_path).parent / Path(session_path).stem / "subagents"
+    if not sub_dir.is_dir():
+        return out
+    for f in sub_dir.glob("agent-*.jsonl"):
+        meta = {}
+        mf = f.with_name(f.name[:-len(".jsonl")] + ".meta.json")
+        if mf.is_file():
+            try:
+                meta = json.loads(mf.read_text())
+            except (OSError, json.JSONDecodeError):
+                meta = {}
+        agent_id = f.stem[len("agent-"):]
+        info = {"entries": list(iter_jsonl(f)), "agent_id": agent_id,
+                "name": meta.get("description"), "type": meta.get("agentType")}
+        key = meta.get("toolUseId") or agent_id
+        out[key] = info
+        out.setdefault("agent:" + agent_id, info)
+    return out
+
+
+def subagent_report(info):
+    """Full final report of a subagent: SubagentHandback message (background
+    agents hand back this way), else its last assistant text."""
+    best_handback, last_text = None, None
+    for e in info.get("entries") or []:
+        if e.get("type") != "assistant":
+            continue
+        for b in blocks_of(e):
+            if b.get("type") == "tool_use" and b.get("name") == "SubagentHandback":
+                msg = (b.get("input") or {}).get("message")
+                if msg and (best_handback is None or len(msg) > len(best_handback)):
+                    best_handback = msg
+            elif b.get("type") == "text" and (b.get("text") or "").strip():
+                last_text = b["text"].strip()
+    return best_handback or last_text
+
+
+def parse_claude_entries(entries, meta, all_text=True, session_path=None):
+    """Condense Claude Code-format entries (jsonl lines, Desktop cache events
+    or cloud events) into turns: user messages, the main agent's progress
+    notes and final answer per turn, and subagent blocks (summary as received
+    plus the subagent's full report)."""
     entries = apply_rewinds(linearize_tree(entries))
-    turns = []  # {role: user|assistant|summary, text, ts}
-    pending = []  # [(message_id, text)] assistant texts of current turn
+    turns = []
     seen_real_user = False
 
-    def flush_assistant():
-        nonlocal pending
-        if not pending:
-            return
-        if all_text:
-            text = "\n\n".join(t for _, t in pending)
-        else:
-            last_id = pending[-1][0]
-            text = "\n\n".join(t for mid, t in pending if mid == last_id)
-        pending = []
-        if text.strip():
-            turns.append({"role": "assistant", "text": text.strip(), "ts": None})
-
-    for entry in entries:
-        if not isinstance(entry, dict):
+    # ---- pre-pass: subagent registry ------------------------------------
+    subagents = load_cli_subagents(session_path) if session_path else {}
+    for e in entries:  # in-stream subagent entries (cloud: parent_tool_use_id, CLI: agentId)
+        if e.get("type") not in ("user", "assistant"):
+            continue  # tool_progress etc. also carry parent_tool_use_id for ordinary tools
+        pid = e.get("parent_tool_use_id")
+        aid = e.get("agentId") if e.get("isSidechain") else None
+        key = pid or ("agent:" + aid if aid else None)
+        if not key:
             continue
+        info = subagents.setdefault(key, {"entries": [], "name": None, "type": None, "agent_id": aid})
+        info["entries"].append(e)
+        if e.get("task_description") and not info.get("name"):
+            info["name"] = e["task_description"]
+        if e.get("subagent_type") and not info.get("type"):
+            info["type"] = e["subagent_type"]
+    task_to_tool = {}
+    agent_tool_ids = set()
+    for e in entries:  # names from the Agent tool calls; task-id ↔ tool-use-id from notifications
+        if e.get("parent_tool_use_id") or e.get("isSidechain"):
+            continue
+        if e.get("type") == "assistant":
+            for b in blocks_of(e):
+                if b.get("type") == "tool_use" and b.get("name") in AGENT_TOOL_NAMES:
+                    inp = b.get("input") or {}
+                    agent_tool_ids.add(b.get("id"))
+                    info = subagents.setdefault(b.get("id"), {"entries": [], "name": None, "type": None})
+                    info["name"] = info.get("name") or inp.get("description") or inp.get("name")
+                    info["type"] = info.get("type") or inp.get("subagent_type")
+        elif e.get("type") == "user":
+            for b in blocks_of(e):
+                if b.get("type") == "text":
+                    tm, um = TASK_ID_RE.search(b.get("text") or ""), TOOL_USE_ID_RE.search(b.get("text") or "")
+                    if tm and um:
+                        task_to_tool[tm.group(1).strip()] = um.group(1).strip()
+    for tid, tuid in task_to_tool.items():  # CLI: agent-<id>.jsonl keyed by task id
+        if "agent:" + tid in subagents and tuid not in subagents:
+            subagents[tuid] = subagents["agent:" + tid]
+
+    def sub_name(key):
+        info = subagents.get(key) or {}
+        name = info.get("name") or (info.get("type") or "subagent")
+        typ = info.get("type")
+        return f"{name} ({typ})" if typ and typ not in name else name
+
+    emitted = set()
+
+    def is_real_subagent(key):
+        info = subagents.get(key) or {}
+        return key in agent_tool_ids or bool(info.get("type")) or any(
+            e.get("type") == "assistant" for e in info.get("entries") or [])
+
+    def emit_subagent(key, summary, ts, persisted_hint=None):
+        if key in emitted or not is_real_subagent(key):
+            return
+        emitted.add(key)
+        info = subagents.get(key) or {}
+        full = subagent_report(info)
+        if persisted_hint:
+            full = max([full or "", persisted_hint], key=len) or None
+        summary = (summary or "").strip()
+        if summary.startswith("Async agent launched"):
+            summary = ""
+        attach = bool(full) and (not summary or "<persisted-output>" in summary
+                                 or len(full.strip()) > len(summary))
+        if summary.startswith("<persisted-output>"):  # keep only the preview part readable
+            summary = re.sub(r"^<persisted-output>\s*", "", summary).strip()
+        turns.append({"role": "subagent", "name": sub_name(key), "summary": summary,
+                      "report": full if attach and full.strip() != summary else None, "ts": ts})
+
+    def close_turn():
+        """Promote the last progress note of the turn to the final answer;
+        with all_text=False drop the other notes."""
+        i = len(turns) - 1
+        while i >= 0 and turns[i]["role"] not in ("user", "assistant"):
+            i -= 1
+        start = i + 1
+        idx = [k for k in range(start, len(turns)) if turns[k]["role"] == "assistant_progress"]
+        if not idx:
+            return
+        turns[idx[-1]]["role"] = "assistant"
+        if not all_text:
+            for k in reversed(idx[:-1]):
+                del turns[k]
+
+    last_mid = None
+    for entry in entries:
         etype = entry.get("type")
         ts = parse_ts(entry.get("timestamp"))
         if ts:
@@ -278,64 +426,74 @@ def parse_claude_entries(entries, meta, all_text=False):
         if etype == "summary" and entry.get("summary"):
             meta["title"] = meta["title"] or entry["summary"]
             continue
-        if entry.get("isSidechain") or entry.get("isSynthetic"):
-            continue  # subagent traffic / synthetic (worker-generated) user events
+        if entry.get("isSidechain") or entry.get("isSynthetic") or entry.get("parent_tool_use_id"):
+            continue  # subagent traffic (handled via the registry) / synthetic events
         if etype == "result":
-            flush_assistant()  # SDK/remote streams: end of an agent turn
+            close_turn()
             continue
         if etype == "user":
-            message = entry.get("message") or {}
-            content = message.get("content")
+            content = (entry.get("message") or {}).get("content")
             if entry.get("isMeta"):
-                # Hook-injected prompts (e.g. Stop hooks) start a new assistant
-                # response, so the previous turn's final answer must be flushed.
                 meta_text, _, _ = claude_user_text(content)
                 if meta_text.lstrip().startswith("Stop hook feedback:"):
-                    flush_assistant()
-                    turns.append({"role": "event",
-                                  "text": f"[hook: {snippet(meta_text, 100)}]",
-                                  "ts": ts})
+                    close_turn()
+                    turns.append({"role": "event", "text": f"[hook: {snippet(meta_text, 100)}]", "ts": ts})
                 continue
             if entry.get("isCompactSummary"):
-                # Only keep it when it carries history not present in this file.
                 if not seen_real_user:
                     text, _, _ = claude_user_text(content)
                     if text.strip():
                         turns.append({"role": "summary", "text": text.strip(), "ts": ts})
                 continue
+            # subagent results arriving in the main chain
+            for b in blocks_of(entry):
+                if b.get("type") == "tool_result" and b.get("tool_use_id") in subagents:
+                    txt = block_text(b)
+                    if txt.lstrip().startswith("Async agent launched"):
+                        continue  # background agent: placed when its report arrives
+                    emit_subagent(b["tool_use_id"], txt, ts, read_persisted(txt))
             text, has_tool_result, has_image = claude_user_text(content)
             text = strip_reminders(text)
             if not text and (has_tool_result or not has_image):
-                continue  # pure tool result / empty
+                continue
             stripped = text.lstrip()
+            am = AGENT_MSG_RE.search(text)
+            if am:
+                key = task_to_tool.get(am.group(1)) or ("agent:" + am.group(1))
+                if key not in subagents:
+                    key = am.group(1)
+                body = re.sub(r"^\s*\[Subagent hand-back\][^\n]*\n?", "", text[am.end():], count=1)
+                body = re.sub(r"</agent-message>\s*$", "", body.strip())
+                emit_subagent(key, body, ts, read_persisted(text))
+                continue
             if stripped.startswith(("<command-name>", "<command-message>")):
-                # Slash commands are user actions: they end the previous turn,
-                # so flush before dropping the XML noise, and keep a marker.
                 match = COMMAND_NAME_RE.search(text)
                 cmd = match.group(1).strip() if match else "?"
                 args_match = COMMAND_ARGS_RE.search(text)
                 if args_match and args_match.group(1).strip():
                     cmd += " " + snippet(args_match.group(1).strip(), 60)
-                flush_assistant()
+                close_turn()
                 turns.append({"role": "command", "text": cmd, "ts": ts})
                 continue
             if stripped.startswith("[Request interrupted by user"):
-                flush_assistant()
+                close_turn()
                 turns.append({"role": "event", "text": "[user interrupted]", "ts": ts})
                 continue
             if stripped.startswith("<task-notification>"):
-                # Background task completion: system-injected, triggers a new
-                # assistant response — a turn boundary, not a user message.
-                flush_assistant()
-                match = re.search(r"<summary>(.*?)</summary>", text, re.DOTALL)
-                label = snippet(match.group(1), 100) if match else "background task finished"
-                turns.append({"role": "event", "text": f"[task: {label}]", "ts": ts})
+                close_turn()
+                um = TOOL_USE_ID_RE.search(text)
+                if um and um.group(1).strip() in subagents:
+                    emit_subagent(um.group(1).strip(), "", ts, read_persisted(text))
+                else:
+                    match = re.search(r"<summary>(.*?)</summary>", text, re.DOTALL)
+                    label = snippet(match.group(1), 100) if match else "background task finished"
+                    turns.append({"role": "event", "text": f"[task: {label}]", "ts": ts})
                 continue
             if text and is_noise(text, CLAUDE_USER_NOISE_PREFIXES):
                 continue
             if has_image:
                 text = (text + "\n" if text else "") + "*[image attached]*"
-            flush_assistant()
+            close_turn()
             turns.append({"role": "user", "text": text, "ts": ts})
             seen_real_user = True
         elif etype == "assistant":
@@ -343,14 +501,21 @@ def parse_claude_entries(entries, meta, all_text=False):
                 continue
             message = entry.get("message") or {}
             mid = message.get("id") or entry.get("messageId") or entry.get("requestId")
-            for block in message.get("content") or []:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    text = (block.get("text") or "").strip()
-                    if text:
-                        pending.append((mid, text))
-    flush_assistant()
+            for b in blocks_of(entry):
+                if b.get("type") != "text":
+                    continue
+                text = (b.get("text") or "").strip()
+                if not text:
+                    continue
+                if turns and turns[-1]["role"] == "assistant_progress" and mid and turns[-1].get("mid") == mid:
+                    turns[-1]["text"] += "\n\n" + text  # same API message, several text blocks
+                else:
+                    turns.append({"role": "assistant_progress", "text": text, "ts": ts, "mid": mid})
+            last_mid = mid
+    close_turn()
     meta["turns"] = turns
     meta["user_messages"] = sum(1 for t in turns if t["role"] == "user")
+    meta["subagents"] = sum(1 for t in turns if t["role"] == "subagent")
     if not meta["title"]:
         first = next((t for t in turns if t["role"] == "user"), None)
         meta["title"] = snippet(first["text"]) if first else "(empty session)"
@@ -385,7 +550,7 @@ def codex_index_titles():
     return titles
 
 
-def parse_codex_session(path, all_text=False):
+def parse_codex_session(path, all_text=True):
     turns = []
     pending = []
     meta = {"agent": "codex", "path": str(path), "session_id": None,
@@ -628,7 +793,7 @@ def cloud_project_label(s):
     return "claude.ai/code (cloud session)"
 
 
-def parse_cloud_session(cse_id, all_text=False):
+def parse_cloud_session(cse_id, all_text=True):
     s = cloud_session_meta(cse_id) or {}
     rs = s.get("response_shape") or s
     meta = {"agent": "remote", "path": f"{CLOUD_API}/{cse_id}", "session_id": cse_id,
@@ -681,7 +846,7 @@ def remote_session_id(rec):
     return cid.split(":", 1)[-1] if ":" in cid else cid   # "code:cse_X" -> "cse_X"
 
 
-def parse_remote_session(rec, blob_path, all_text=False):
+def parse_remote_session(rec, blob_path, all_text=True):
     tree = rec.get("tree") or {}
     sid = remote_session_id(rec)
     meta = {"agent": "remote", "path": str(blob_path), "session_id": sid,
@@ -785,7 +950,7 @@ def import_summary(chars):
             f"{window//1000}k-token context window (model: {model})")
 
 
-def parse_any(agent, path, all_text=False):
+def parse_any(agent, path, all_text=True):
     if agent == "codex":
         return parse_codex_session(path, all_text=all_text)
     if agent == "remote":
@@ -897,8 +1062,9 @@ def render_markdown(parsed, max_chars=0):
     lines.append(f"- **Time:** {fmt_ts(parsed['first_ts'])} → {fmt_ts(parsed['last_ts'])}")
     lines.append(f"- **User messages:** {parsed['user_messages']}")
     lines.append("")
-    lines.append("> Condensed transcript: user messages and each turn's final assistant "
-                 "answer only. Tool calls, intermediate steps and thinking are omitted.")
+    lines.append("> Condensed transcript: user messages, the main agent's progress notes and "
+                 "final answer per turn, and subagent results (summary + full report). Tool "
+                 "calls, tool results and thinking are omitted.")
     if parsed.get("source"):
         lines.append(f"> Source: {parsed['source']}.")
     if parsed.get("head_cut"):
@@ -915,6 +1081,22 @@ def render_markdown(parsed, max_chars=0):
             continue
         if turn["role"] == "event":
             lines.append(f"*⚙ {turn['text']}*")
+            lines.append("")
+            continue
+        if turn["role"] == "assistant_progress":
+            lines.append(truncate(turn["text"], max_chars))  # main agent's note between tool calls
+            lines.append("")
+            continue
+        if turn["role"] == "subagent":
+            lines.append("---")
+            lines.append(f"### 🧭 Subagent «{turn['name']}» — result as received by the main agent")
+            lines.append("")
+            lines.append(truncate(turn["summary"], max_chars) if turn["summary"] else "*(background agent finished; see full report below)*")
+            if turn.get("report"):
+                lines.append("")
+                lines.append(f"**Here is the full report from subagent «{turn['name']}»:**")
+                lines.append("")
+                lines.append(truncate(turn["report"], max_chars))
             lines.append("")
             continue
         lines.append("---")
@@ -995,7 +1177,7 @@ def cmd_extract(args):
 
     outputs = []
     for agent, path in targets:
-        parsed = parse_any(agent, path, all_text=args.all_text)
+        parsed = parse_any(agent, path, all_text=not args.final_only)
         if agent == "codex":
             titles = codex_index_titles()
             if parsed["session_id"] in titles:
@@ -1051,8 +1233,9 @@ def main():
     p_ext.add_argument("--current", action="store_true",
                        help="extract the currently running session of this project "
                             "(most recently written session file)")
-    p_ext.add_argument("--all-text", action="store_true",
-                       help="keep ALL assistant text of a turn, not just the final answer")
+    p_ext.add_argument("--final-only", action="store_true",
+                       help="only each turn's final answer (default: also the main agent's "
+                            "progress notes between tool calls)")
     p_ext.add_argument("--max-chars", type=int, default=0,
                        help="truncate each message to N chars (0 = no truncation)")
     p_ext.add_argument("--last", type=int, default=0,
