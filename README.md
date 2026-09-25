@@ -2,7 +2,7 @@
 
 A Claude Code **plugin** that makes sure long agent sessions never lose knowledge to context compaction:
 
-- **`cycle-context` skill** — import previous local agent sessions (Claude Code **and** Codex CLI) into the current conversation as *condensed* context: only the user's messages and each turn's **final answer** — no tool calls, tool results, code edits, intermediate steps or thinking. An 18 MB session file collapses to ~70 KB of readable context.
+- **`cycle-context` skill** — import previous local agent sessions (Claude Code CLI, **Claude Desktop** local coding sessions on macOS, and Codex CLI) into the current conversation as *condensed* context: only the user's messages and each turn's **final answer** — no tool calls, tool results, code edits, intermediate steps or thinking. An 18 MB session file collapses to ~70 KB of readable context.
 - **Pre-compaction documentation checkpoint** (PostToolUse hook) — when the context crosses 80% of the effective window, the agent is instructed to update all project documentation (incl. architecture docs and learnings from mistakes), then stop with a numbered next-steps list and ask you to run `/compact`. Also available **on demand at any context level** as the `/cycle-checkpoint` skill — same checkpoint, and it suppresses the then-redundant automatic reminder for the current cycle.
 - **Post-compaction context restore** (SessionStart hook) — after every compaction, the full condensed transcript is re-injected automatically, together with an instruction to re-read all project docs and a token-size report. The injection is **chunked** (40 parallel hook slots à ~9 KB) because Claude Code silently swaps any single hook output above ~10–12k chars for a file reference the agent would have to read itself; chunking injects up to ~360 KB directly with no Read step. If a transcript is even larger, the **newest content is always injected** (chronological, newest last) and only the oldest part goes to a file with a read-completely instruction.
 
@@ -35,7 +35,7 @@ The trick behind step 5: the condensed extract keeps exactly two things — **yo
 /plugin install context-cycle@hafnera
 ```
 
-That's it — the skill and both hooks are active in all projects (new sessions pick them up automatically). Requires `python3` on the PATH; developed and tested on macOS, should work on Linux, Windows is untested.
+That's it — the skill and both hooks are active in all projects (new sessions pick them up automatically). Requires `python3` on the PATH; developed and tested on macOS, should work on Linux, **Windows only inside WSL**.
 
 To update later: `/plugin` → Manage plugins → update, or `claude plugin update context-cycle@hafnera` on the CLI.
 
@@ -74,7 +74,7 @@ python3 skills/cycle-context/scripts/extract_session.py extract f4c4d603 --all-p
 python3 skills/cycle-context/scripts/extract_session.py extract --current
 ```
 
-Key options: `--agent claude|codex|all`, `--project PATH`, `--all-projects`, `--grep TEXT`, `--current`, `--last N`, `--max-chars N`, `--all-text` (all assistant text of a turn instead of only the final answer), `--json`, `--path FILE`, `-o FILE`.
+Key options: `--agent claude|desktop|codex|all`, `--project PATH`, `--all-projects`, `--grep TEXT`, `--current`, `--last N`, `--max-chars N`, `--all-text` (all assistant text of a turn instead of only the final answer), `--json`, `--path FILE`, `-o FILE`.
 
 ## What the parser keeps and drops
 
@@ -94,6 +94,9 @@ Key options: `--agent claude|codex|all`, `--project PATH`, `--all-projects`, `--
 The threshold basis is `autoCompactWindow` **if set**, otherwise the model window (1M for `[1m]` models, 200k otherwise). The injected message always names the basis it used. If the measured usage is larger than that guess (e.g. the settings model string has no `[1m]` suffix but the session runs with 1M), a 1M window is inferred — the message then says so.
 
 ## Notes
+
+- **Claude Desktop sessions (macOS):** Desktop's *local* coding sessions are supported (`[desktop]` in the list, titled as in the Desktop app). Desktop only stores metadata itself (`~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json`); the transcript is the matching `<cliSessionId>.jsonl` under `~/.claude/projects`. *Remote* claude.ai/code sessions (`session_…` ids running in cloud sandboxes) keep no local transcript and cannot be imported — the extractor says so explicitly.
+- **Windows:** works only inside **WSL**. Native Windows is not supported yet (the hooks rely on `python3` and `/tmp`).
 
 - **How the 80% is measured (and why it may differ from the UI):** the hook reads the latest *main-context* usage block from the session file (subagent/sidechain usage is ignored — it describes the subagent's own, much smaller context) and compares it against the **raw** window (`autoCompactWindow` if set, else the model window). Claude Code's own context display measures against the **auto-compact point** instead, so its percentage runs ahead — the UI can show ~90% while the raw measure is at ~78%. The hook fires at raw 80%, which is still comfortably before auto-compact (~90%+). If you want it aligned closer to the UI feeling, lower `REMIND_FRACTION` (e.g. `0.75`).
 - Silent hook runs leave no trace in the transcript — below the threshold the reminder produces no output by design. Proof of life after a compaction are the `Recovered session context — part i/M` blocks.

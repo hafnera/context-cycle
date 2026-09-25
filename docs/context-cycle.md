@@ -10,7 +10,7 @@ When an agent's context window fills up, Claude Code compacts the conversation i
 
 | Component | Type | File | Job |
 |---|---|---|---|
-| Extractor | CLI script | [`skills/cycle-context/scripts/extract_session.py`](../skills/cycle-context/scripts/extract_session.py) | Distills session files (Claude Code + Codex) down to user messages + final answers |
+| Extractor | CLI script | [`skills/cycle-context/scripts/extract_session.py`](../skills/cycle-context/scripts/extract_session.py) | Distills session files (Claude Code CLI, Claude Desktop local sessions, Codex) down to user messages + final answers |
 | `cycle-context` skill | Plugin skill | [`skills/cycle-context/SKILL.md`](../skills/cycle-context/SKILL.md) | Manual import of sessions as context; also for the running session (`--current`) |
 | Docs-checkpoint reminder | `PostToolUse` hook | [`skills/cycle-context/hooks/pre_compact_docs_reminder.py`](../skills/cycle-context/hooks/pre_compact_docs_reminder.py) | Detects the 80% threshold, orders a documentation checkpoint + orderly stop |
 | `cycle-checkpoint` skill | Plugin skill | [`skills/cycle-checkpoint/SKILL.md`](../skills/cycle-checkpoint/SKILL.md) | The same checkpoint on demand, at any context level (`/cycle-checkpoint`); arms the once-marker so the 80% reminder stays silent for the cycle |
@@ -93,6 +93,8 @@ Claude Code silently replaces any single hook output larger than **~10–12k cha
 | `LAST_USER_TURNS` / `MAX_CHARS_PER_MESSAGE` | `on_compact.py` | `None` (= everything) | Optional bounds for the re-injection |
 
 ## Limitations
+
+- Claude Desktop (macOS): only *local* coding sessions are available (metadata JSON + the CLI transcript under `~/.claude/projects`). *Remote* claude.ai/code sessions (`session_…`) run in cloud sandboxes and leave no local transcript.
 
 - The skill's `--current` mode identifies the running session via the most recently written file (mtime) — with two parallel sessions in the same project, specify the session id instead. (The hooks are unaffected: they receive the exact `transcript_path` from the harness.)
 - Tool results only survive compaction to the extent the agent summarizes them into its final checkpoint answer (hence the mandatory last-tool-result summary).

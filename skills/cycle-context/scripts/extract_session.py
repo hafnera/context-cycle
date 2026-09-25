@@ -4,6 +4,9 @@
 Supported agents:
   - Claude Code : ~/.claude/projects/<munged-cwd>/<session-id>.jsonl
   - Codex CLI   : ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+  - Claude Desktop (macOS, local coding sessions): metadata under
+    ~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json,
+    transcript = ~/.claude/projects/*/<cliSessionId>.jsonl
 
 The condensed transcript keeps only real user messages and the FINAL
 assistant answer of each turn. Tool calls, tool results, intermediate
@@ -31,6 +34,8 @@ from pathlib import Path
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 CODEX_INDEX_FILE = Path.home() / ".codex" / "session_index.jsonl"
+DESKTOP_SESSIONS_DIR = (Path.home() / "Library" / "Application Support" / "Claude"
+                        / "claude-code-sessions")
 
 # A session file modified this recently is probably the one currently running.
 ACTIVE_WINDOW_SECONDS = 180
@@ -379,10 +384,53 @@ def codex_session_files(project=None, all_projects=False):
     return matched
 
 
+def desktop_sessions(project=None, all_projects=False):
+    """Claude Desktop (macOS) local coding sessions.
+
+    Desktop keeps only metadata (title, model, cwd, cliSessionId) under
+    ~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json;
+    the transcript is a normal Claude Code jsonl named <cliSessionId>.jsonl
+    somewhere under ~/.claude/projects. Returns [(meta_dict, jsonl_path)].
+    Remote claude.ai/code sessions ("session_..." ids) have no local transcript.
+    """
+    if not DESKTOP_SESSIONS_DIR.is_dir():
+        return []
+    wanted = (str(Path(project or Path.cwd()).expanduser().resolve())
+              if not all_projects else None)
+    found = []
+    for meta_file in DESKTOP_SESSIONS_DIR.rglob("local_*.json"):
+        try:
+            meta = json.loads(meta_file.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        cli_id = meta.get("cliSessionId")
+        if not cli_id:
+            continue
+        cwd = meta.get("originCwd") or meta.get("cwd") or ""
+        if wanted and cwd != wanted:
+            continue
+        hits = list(CLAUDE_PROJECTS_DIR.glob(f"*/{cli_id}.jsonl")) if CLAUDE_PROJECTS_DIR.is_dir() else []
+        if hits:
+            found.append((meta, hits[0]))
+    return sorted(found, key=lambda mp: mp[1].stat().st_mtime, reverse=True)
+
+
+def desktop_meta_for(path):
+    """Desktop metadata for a transcript path, if it is a Desktop session."""
+    for meta, p in desktop_sessions(all_projects=True):
+        if p == path:
+            return meta
+    return None
+
+
 def discover(agent, project, all_projects):
     files = []
+    desktop = desktop_sessions(project, all_projects) if agent in ("desktop", "all") else []
+    desktop_paths = {p for _, p in desktop}
     if agent in ("claude", "all"):
-        files += [("claude", f) for f in claude_session_files(project, all_projects)]
+        files += [("claude", f) for f in claude_session_files(project, all_projects)
+                  if f not in desktop_paths]
+    files += [("desktop", p) for _, p in desktop]
     if agent in ("codex", "all"):
         files += [("codex", f) for f in codex_session_files(project, all_projects)]
     return sorted(files, key=lambda af: af[1].stat().st_mtime, reverse=True)
@@ -422,6 +470,21 @@ def import_summary(chars):
             f"{window//1000}k-token context window (model: {model})")
 
 
+def parse_any(agent, path, all_text=False):
+    if agent == "codex":
+        return parse_codex_session(path, all_text=all_text)
+    parsed = parse_claude_session(path, all_text=all_text)
+    if agent == "desktop":
+        meta = desktop_meta_for(path) or {}
+        parsed["agent"] = "desktop"
+        if meta.get("title"):
+            parsed["title"] = meta["title"]
+        parsed["cwd"] = meta.get("originCwd") or meta.get("cwd") or parsed["cwd"]
+        parsed["desktop_session_id"] = meta.get("sessionId")
+        parsed["model"] = meta.get("model")
+    return parsed
+
+
 def cmd_list(args):
     entries = discover(args.agent, args.project, args.all_projects)
     codex_titles = codex_index_titles() if args.agent in ("codex", "all") else {}
@@ -430,7 +493,7 @@ def cmd_list(args):
     for agent, path in entries:
         if len(rows) >= args.limit:
             break
-        parsed = (parse_claude_session if agent == "claude" else parse_codex_session)(path)
+        parsed = parse_any(agent, path)
         if parsed["user_messages"] == 0 and not args.include_empty:
             continue
         if args.grep:
@@ -485,7 +548,8 @@ def truncate(text, max_chars):
 
 def render_markdown(parsed, max_chars=0):
     lines = []
-    agent_name = "Claude Code" if parsed["agent"] == "claude" else "Codex CLI"
+    agent_name = {"claude": "Claude Code", "codex": "Codex CLI",
+                  "desktop": "Claude Desktop (local coding session)"}.get(parsed["agent"], parsed["agent"])
     lines.append("# Imported session context")
     lines.append(f"- **Agent:** {agent_name}")
     lines.append(f"- **Project:** {parsed['cwd'] or '?'}")
@@ -545,6 +609,13 @@ def cmd_extract(args):
             sys.exit(2)
         entries = discover(args.agent, args.project, args.all_projects)
         for sid in args.session_ids:
+            if sid.startswith("session_"):
+                print(f"error: '{sid}' is a REMOTE claude.ai/code session (cloud). Claude Desktop "
+                      "keeps no local transcript for remote sessions, so it cannot be extracted "
+                      "from this machine. Only Desktop's LOCAL coding sessions (local_...) are "
+                      "available; list them with: list --agent desktop --all-projects",
+                      file=sys.stderr)
+                sys.exit(1)
             match = None
             for agent, path in entries:
                 stem = path.stem
@@ -552,7 +623,9 @@ def cmd_extract(args):
                 if agent == "codex":
                     meta = codex_read_meta(path)
                     real_id = (meta or {}).get("id") or stem
-                if stem.startswith(sid) or real_id.startswith(sid) or sid in stem:
+                elif agent == "desktop":
+                    real_id = (desktop_meta_for(path) or {}).get("sessionId") or stem
+                if stem.startswith(sid) or real_id.startswith(sid) or sid in stem or sid in real_id:
                     match = (agent, path)
                     break
             if not match:
@@ -564,8 +637,7 @@ def cmd_extract(args):
 
     outputs = []
     for agent, path in targets:
-        parsed = (parse_claude_session if agent == "claude" else parse_codex_session)(
-            path, all_text=args.all_text)
+        parsed = parse_any(agent, path, all_text=args.all_text)
         if agent == "codex":
             titles = codex_index_titles()
             if parsed["session_id"] in titles:
@@ -601,8 +673,9 @@ def main():
     common.add_argument("--project", help="project path (default: current directory)")
     common.add_argument("--all-projects", action="store_true",
                         help="search sessions of all projects")
-    common.add_argument("--agent", choices=("claude", "codex", "all"), default="all",
-                        help="which agent's sessions (default: all)")
+    common.add_argument("--agent", choices=("claude", "desktop", "codex", "all"), default="all",
+                        help="which agent's sessions: claude (CLI), desktop (Claude Desktop "
+                             "local coding sessions, macOS), codex, or all (default)")
     common.add_argument("--json", action="store_true", help="machine-readable output")
 
     p_list = sub.add_parser("list", parents=[common], help="list local sessions")
