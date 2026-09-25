@@ -80,6 +80,7 @@ Key options: `--agent claude|desktop|remote|codex|all`, `--project PATH`, `--all
 
 - **Kept:** real user messages, the final assistant answer of each turn, carried-over compact summaries, image markers (`[image attached]`).
 - **Kept as one-line markers:** slash commands (`⌘ User ran: /model …`), stop-hook follow-ups, background-task completions and interruptions (`⚙ …`) — they remain as turn boundaries so the *correct* final answer is selected per turn.
+- **Duplicates are removed:** resumed sessions re-append history into the same file; exact `uuid` duplicates are dropped so nothing appears twice.
 - **Rewound branches are removed:** after a `/rewind` (cloud: recorded as a rewind event; CLI: a fork of two user messages under one parent) the abandoned branch is dropped so the transcript reflects the conversation as it actually continued.
 - **Dropped:** `tool_use`/`tool_result`, thinking, subagent sidechains, system reminders, meta/hook noise, IDE context, Codex `environment_context`/`user_instructions`, API errors, empty sessions.
 

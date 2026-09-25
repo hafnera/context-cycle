@@ -171,7 +171,17 @@ def linearize_tree(entries):
     are dropped, the later one wins. Other forks (parallel tool results,
     hook attachments, resumed segments) are left untouched, because following
     a single leaf chain would also discard legitimate history."""
-    ents = [e for e in entries if isinstance(e, dict)]
+    ents = []
+    seen_uuids = set()
+    for e in entries:  # resumes re-append history: drop exact uuid duplicates
+        if not isinstance(e, dict):
+            continue
+        u = e.get("uuid")
+        if u:
+            if u in seen_uuids:
+                continue
+            seen_uuids.add(u)
+        ents.append(e)
     if not any(e.get("uuid") and "parentUuid" in e for e in ents):
         return ents
     children = {}
@@ -180,10 +190,17 @@ def linearize_tree(entries):
             children.setdefault(e.get("parentUuid"), []).append(i)
 
     def is_user_text(e):
-        if e.get("type") != "user" or e.get("isMeta") or e.get("isSidechain"):
+        """A real, typed user prompt — not a command, caveat, compact summary,
+        task notification or tool result (those also appear as forks around
+        /compact and must not be mistaken for rewinds)."""
+        if e.get("type") != "user" or e.get("isMeta") or e.get("isSidechain") \
+                or e.get("isCompactSummary") or e.get("isSynthetic"):
             return False
         text, has_tool_result, _ = claude_user_text((e.get("message") or {}).get("content"))
-        return bool(text.strip()) and not has_tool_result
+        text = strip_reminders(text).lstrip()
+        if not text or has_tool_result or text.startswith(("<", "[Request interrupted")):
+            return False
+        return not is_noise(text, CLAUDE_USER_NOISE_PREFIXES)
 
     dropped = set()
     for parent, kids in children.items():
