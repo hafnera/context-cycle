@@ -301,6 +301,35 @@ def load_cli_subagents(session_path):
     return out
 
 
+WF_DIR_RE = re.compile(r"Transcript dir:\s*(\S+)")
+WF_SUMMARY_RE = re.compile(r"Summary:\s*(.*?)\s*Transcript dir:", re.DOTALL)
+
+
+def load_workflow_agents(wf_dir):
+    """<session>/subagents/workflows/<run>/agent-*.jsonl (+ .meta.json)."""
+    agents = []
+    d = Path(wf_dir)
+    if not d.is_dir():
+        return agents
+    for f in sorted(d.glob("agent-*.jsonl")):
+        meta = {}
+        mf = f.with_name(f.name[:-len(".jsonl")] + ".meta.json")
+        if mf.is_file():
+            try:
+                meta = json.loads(mf.read_text())
+            except (OSError, json.JSONDecodeError):
+                pass
+        entries = list(iter_jsonl(f))
+        handback, last_text = subagent_texts({"entries": entries})
+        agents.append({"name": meta.get("description") or f.stem[len("agent-"):],
+                       "phase": meta.get("workflowPhase"), "report": handback or last_text or ""})
+    phase_order = {}
+    for a in agents:
+        phase_order.setdefault(a["phase"], len(phase_order))
+    agents.sort(key=lambda a: (phase_order[a["phase"]], a["name"]))
+    return agents
+
+
 def subagent_segments(info):
     """A subagent resumed several times (SendMessage) shares one transcript:
     split it at its user prompts into invocation segments, each yielding
@@ -363,6 +392,19 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
             info["type"] = e["subagent_type"]
     task_to_tool = {}
     agent_tool_ids = set()
+    workflows = {}  # Workflow tool_use id -> {"dir", "summary"}
+    for e in entries:
+        if e.get("type") != "user" or e.get("parent_tool_use_id") or e.get("isSidechain"):
+            continue
+        for b in blocks_of(e):
+            if b.get("type") == "tool_result":
+                txt = block_text(b)
+                if txt.lstrip().startswith("Workflow launched"):
+                    m = WF_DIR_RE.search(txt)
+                    sm = WF_SUMMARY_RE.search(txt)
+                    if m:
+                        workflows[b.get("tool_use_id")] = {"dir": m.group(1),
+                                                           "summary": (sm.group(1).strip() if sm else "workflow")}
     for e in entries:  # names from the Agent tool calls; task-id ↔ tool-use-id from notifications
         if e.get("parent_tool_use_id") or e.get("isSidechain"):
             continue
@@ -433,6 +475,36 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
         turns.append({"role": "subagent", "name": sub_name(key), "summary": summary,
                       "report": report, "ts": ts})
 
+    wf_seen_dirs = set()
+
+    def emit_workflow(key, notification_text, ts):
+        wf = workflows.get(key)
+        if not wf:
+            return
+        # the workflow's own return value: persisted output file if still present, else the notification body
+        body = ""
+        of = OUTPUT_FILE_RE.search(notification_text or "")
+        if of and Path(of.group(1).strip()).is_file():
+            try:
+                body = Path(of.group(1).strip()).read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                body = ""
+        if not body:
+            body = re.sub(r"<task-notification>.*?</summary>", "", notification_text or "", flags=re.DOTALL)
+            body = re.sub(r"</task-notification>", "", body).strip()
+        agents = [] if wf["dir"] in wf_seen_dirs else load_workflow_agents(wf["dir"])
+        wf_seen_dirs.add(wf["dir"])
+        report = None
+        if agents:
+            parts = []
+            for a in agents:
+                parts.append(f"###### Workflow agent «{a['name']}»" + (f" — phase {a['phase']}" if a["phase"] else ""))
+                parts.append(a["report"] or "*(no report text)*")
+                parts.append("")
+            report = "\n".join(parts)
+        turns.append({"role": "subagent", "name": f"Workflow: {wf['summary']}", "summary": body,
+                      "report": report, "ts": ts, "workflow_agents": len(agents)})
+
     def close_turn():
         """Promote the last progress note of the turn to the final answer;
         with all_text=False drop the other notes."""
@@ -494,7 +566,9 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
                     if not agent_busy:
                         close_turn()
                     um = TOOL_USE_ID_RE.search(text)
-                    if um and um.group(1).strip() in subagents:
+                    if um and um.group(1).strip() in workflows:
+                        emit_workflow(um.group(1).strip(), text, ts)
+                    elif um and um.group(1).strip() in subagents:
                         emit_subagent(um.group(1).strip(), "", ts, read_persisted(text))
                     else:
                         match = re.search(r"<summary>(.*?)</summary>", text, re.DOTALL)
@@ -565,7 +639,9 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
                 if not agent_busy:
                     close_turn()  # the agent had finished; the notification starts a new response
                 um = TOOL_USE_ID_RE.search(text)
-                if um and um.group(1).strip() in subagents:
+                if um and um.group(1).strip() in workflows:
+                    emit_workflow(um.group(1).strip(), text, ts)
+                elif um and um.group(1).strip() in subagents:
                     emit_subagent(um.group(1).strip(), "", ts, read_persisted(text))
                 else:
                     match = re.search(r"<summary>(.*?)</summary>", text, re.DOTALL)
@@ -1205,7 +1281,10 @@ def render_markdown(parsed, max_chars=0):
             lines.append("## 🤖 MAIN AGENT — continuation (no user message precedes this part)")
             lines.append("")
         for s in group["subagents"]:
-            lines.append(f"### 🧭 SUBAGENT «{s['name']}» — result as received by the main agent")
+            if s.get("workflow_agents") is not None:
+                lines.append(f"### 🧭 {s['name']} — workflow result as received by the main agent")
+            else:
+                lines.append(f"### 🧭 SUBAGENT «{s['name']}» — result as received by the main agent")
             lines.append("")
             if s["summary"]:
                 lines.append(truncate(s["summary"], max_chars))
@@ -1217,7 +1296,10 @@ def render_markdown(parsed, max_chars=0):
                 lines.append("*(subagent finished; no report text available)*")
             if s.get("report"):
                 lines.append("")
-                lines.append(f"**Here is the full report from subagent «{s['name']}»:**")
+                if s.get("workflow_agents") is not None:
+                    lines.append(f"**Here are the full reports of the {s['workflow_agents']} workflow agents:**")
+                else:
+                    lines.append(f"**Here is the full report from subagent «{s['name']}»:**")
                 lines.append("")
                 lines.append(truncate(s["report"], max_chars))
             elif s.get("report_omitted") and s["summary"]:
