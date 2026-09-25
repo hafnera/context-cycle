@@ -1,25 +1,26 @@
 # The Context Cycle
 
-How this plugin makes sure that **no knowledge is lost to context compaction** in long Claude Code sessions.
+How this plugin makes sure that **no knowledge is lost to context compaction** in long Claude Code sessions, and how earlier sessions become clean context for a new one.
 
 ## The problem
 
-When an agent's context window fills up, Claude Code compacts the conversation into a summary. Lost in that process: the original wording of your requests, details from final answers, tool-call results — and everything the agent knew but had not (yet) written down.
+When an agent's context window fills up, Claude Code compacts the conversation into a summary. Lost in that process: the original wording of your requests, details from answers, the reports of subagents — and everything the agent knew but had not written down.
 
-## The solution: three components, one cycle
+## Components
 
 | Component | Type | File | Job |
 |---|---|---|---|
-| Extractor | CLI script | [`skills/cycle-context/scripts/extract_session.py`](../skills/cycle-context/scripts/extract_session.py) | Distills session files (Claude Code CLI, Claude Desktop local sessions, claude.ai/code remote sessions, Codex) down to user messages, the main agent's progress notes + final answers, and subagent summaries + full reports |
-| `cycle-context` skill | Plugin skill | [`skills/cycle-context/SKILL.md`](../skills/cycle-context/SKILL.md) | Manual import of sessions as context; also for the running session (`--current`) |
-| Extractor (subagents) | part of the extractor | — | Agent-tool subagents (`subagents/agent-*.jsonl`, cloud `parent_tool_use_id`) and Workflow-tool runs (`subagents/workflows/<run>/`) are rendered as labeled blocks with summary + full reports |
-| Docs-checkpoint reminder | `PostToolUse` hook | [`skills/cycle-context/hooks/pre_compact_docs_reminder.py`](../skills/cycle-context/hooks/pre_compact_docs_reminder.py) | Detects the 80% threshold, orders a documentation checkpoint + orderly stop |
-| `cycle-checkpoint` skill | Plugin skill | [`skills/cycle-checkpoint/SKILL.md`](../skills/cycle-checkpoint/SKILL.md) | The same checkpoint on demand, at any context level (`/cycle-checkpoint`); arms the once-marker so the 80% reminder stays silent for the cycle |
-| Context restore | `SessionStart(compact)` hook | [`skills/cycle-context/hooks/on_compact.py`](../skills/cycle-context/hooks/on_compact.py) | After every compaction, injects the full condensed transcript + docs re-read instruction |
+| Extractor | CLI script | [`skills/cycle-context/scripts/extract_session.py`](../skills/cycle-context/scripts/extract_session.py) | Discovers sessions (CLI, Desktop local, cloud, Codex) and distills them into the structured transcript |
+| Desktop cache decoder | module | [`skills/cycle-context/scripts/v8idb.py`](../skills/cycle-context/scripts/v8idb.py) | V8 structured-clone + Snappy reader for Claude Desktop's IndexedDB (offline fallback for cloud sessions) |
+| `cycle-context` skill | plugin skill | [`skills/cycle-context/SKILL.md`](../skills/cycle-context/SKILL.md) | Finds the session from a description, asks the detail level, imports, confirms with size |
+| `cycle-checkpoint` skill | plugin skill | [`skills/cycle-checkpoint/SKILL.md`](../skills/cycle-checkpoint/SKILL.md) | The documentation checkpoint on demand |
+| Checkpoint reminder | `PostToolUse` hook | [`skills/cycle-context/hooks/pre_compact_docs_reminder.py`](../skills/cycle-context/hooks/pre_compact_docs_reminder.py) | Measures context usage after each tool call; at 80% orders the checkpoint once |
+| Restore instruction | `SessionStart(compact)` hook | [`skills/cycle-context/hooks/on_compact.py`](../skills/cycle-context/hooks/on_compact.py) | After compaction: instruct the agent to ask the detail level (with estimates) and import |
+| Tests | unittest | [`tests/test_extract.py`](../tests/test_extract.py) | Synthetic sessions with every special case; structural invariants |
 
-Both hooks are registered automatically by the plugin ([`hooks/hooks.json`](../hooks/hooks.json)) and apply in all projects.
+Hooks are registered by the plugin ([`hooks/hooks.json`](../hooks/hooks.json)) and apply in all projects.
 
-## The cycle at a glance
+## The cycle
 
 ```mermaid
 flowchart TD
@@ -29,75 +30,57 @@ flowchart TD
     C --> D["🛑 Agent STOPS and answers the user:<br/>• what was documented<br/>• relevant findings from the last tool result<br/>• numbered list of planned next steps<br/>• request: please run /compact now"]
     D --> E["👤 User types /compact<br/>(fallback: auto-compact at ~90%)"]
     E --> F["🗜 Claude Code compacts<br/>the context into a summary"]
-    F --> G["♻️ SessionStart(compact) hook:<br/>extractor reads the session file from disk<br/>(the full history is still there!)"]
-    G --> H["💉 Injected into the fresh context:<br/>• condensed transcript (user messages + final answers,<br/>incl. the next-steps list from D)<br/>• instruction: re-read all project docs<br/>• token report (~Xk tokens ≈ Y% of the window)"]
-    H --> I["✅ Agent knows goal, history and next steps<br/>and works through the list"]
+    F --> G["♻️ SessionStart(compact) hook injects:<br/>ask the user which detail level to restore —<br/>Full / no subagent reports / final answers only / minimal,<br/>each with its token estimate"]
+    G --> H["❓ Agent asks (question card), user picks,<br/>agent extracts that level from the session file<br/>and reads it completely"]
+    H --> I["✅ Agent re-reads the project docs, knows goal,<br/>history and next steps, and works through the list"]
     I --> A
 ```
 
-**The trick in step D:** the extraction keeps the conversation itself — user messages, the main agent's notes and **final answers**, subagent reports — but no tool traffic. By writing its plan and the relevant tool findings into its last answer, the agent makes them compaction-proof: exactly that answer is re-injected in step H.
+**Why the next-steps list survives:** the extractor keeps user messages and the agent's answers. By writing its plan and the relevant tool findings into its last answer (step D), the agent makes them compaction-proof.
 
-## The flow as a sequence diagram
+## The transcript structure
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant U as 👤 User
-    participant A as 🤖 Agent
-    participant CC as Claude Code
-    participant R as Hook: pre_compact_docs_reminder<br/>(PostToolUse)
-    participant J as Session file (.jsonl)
-    participant O as Hook: on_compact<br/>(SessionStart, matcher compact)
+Per user turn, in this order:
 
-    A->>CC: tool call (e.g. Bash, Edit, …)
-    CC->>J: entry incl. usage (token count)
-    CC->>R: PostToolUse event
-    R->>J: reads latest usage block
-    alt context ≥ 80% of the effective window
-        R-->>A: injects checkpoint order (once)
-        A->>A: update docs + architecture + learnings from mistakes
-        A->>U: final answer: checkpoint report, tool-result summary,<br/>next-steps list, request to /compact
-        U->>CC: /compact
-        CC->>CC: compaction
-        CC->>O: SessionStart event (source: compact)
-        O->>J: extracts full history (condensed)
-        O-->>A: injects transcript + docs re-read instruction + token report
-        A->>U: short recap + continues with step 1 of the list
-    else context < 80%
-        R-->>CC: silent (no output)
-    end
-```
+1. `## 👤 USER MESSAGE — time` — the user's message.
+2. `### 🧭 SUBAGENT «name» — result as received by the main agent` — one block per subagent result of this turn: the summary the main agent received, then `Here is the full report from subagent «name»:` with the complete report, closed by `*(end of subagent «name»)*`. Workflow runs render as `### 🧭 Workflow: <summary>` with the workflow's result (JSON rendered as Markdown, failures listed) and the reports of all workflow agents grouped by phase.
+3. `### 🤖 MAIN AGENT — response to the user message above` — `🔹 Agent note (time)` paragraphs (the agent's narration between tool calls), `💬 USER INTERJECTION (time)` for messages typed while the agent was busy, `#### ✅ MAIN AGENT — FINAL ANSWER`. An answer after which the agent continued (typically when background-agent reports arrived) is labeled `ANSWER (turn ended here; the agent continued afterwards …)`.
 
-## Injection mechanics: why the restore is chunked
+Markers between turns: `*⌘ User ran:* /command`, `*⚙ [user interrupted]*`, `*⚙ [hook: …]*`. Carried-over compact summaries appear as `### 📋 …`. Headings inside embedded content are demoted to level 5–6 and horizontal rules neutralized. The legend at the top names the detail level.
 
-Claude Code silently replaces any single hook output larger than **~10–12k characters** (empirically measured; undocumented) with a 2 KB preview plus a file path — the agent would then have to Read the file itself, which in practice happens incompletely. That is why `hooks/hooks.json` registers the restore script **40 times** (`--part i --parts 40`): every part deterministically extracts the same transcript and prints only its own ≤ 9k-character slice, labeled `part i/M` (parts may arrive out of order — hooks run in parallel — so the labels plus a small stagger sleep keep them reassemblable). This injects up to ~360 KB (~90k tokens) of transcript **directly into context, with no Read step**.
+## Sources and how they are read
 
-**Overflow policy (newest wins):** if the transcript needs more than the 40 slots, the **most recent** content is always injected directly, in chronological order with the newest parts last. Slot 1 becomes an overflow notice; the oldest chunks (including the session's original request) are saved to `/tmp/claude-session-restore-<session-id>.md` with a mandatory read-it-completely instruction.
+- **Claude Code CLI / IDE:** `~/.claude/projects/<munged cwd>/<session>.jsonl` — one content block per line, a **tree** (`uuid`/`parentUuid`). Subagents: `<session>/subagents/agent-<id>.jsonl` + `.meta.json` (`agentType`, `description`, `toolUseId`); Workflow runs: `<session>/subagents/workflows/<run>/`. Mid-turn user messages: `attachment` entries of type `queued_command`. Persisted tool outputs: `<session>/tool-results/*.txt`.
+- **Claude Desktop local sessions:** metadata JSON (`title`, `model`, `cwd`, `cliSessionId`) under `~/Library/Application Support/Claude/claude-code-sessions/`; the transcript is the CLI jsonl named after `cliSessionId`.
+- **claude.ai/code cloud sessions:** `GET https://api.anthropic.com/v1/code/sessions` (list, `next_cursor`) and `/v1/code/sessions/<id>/events?cursor=&limit=100` (newest first, back to sequence 1) with the CLI OAuth token (`Claude Code-credentials` in the Keychain / `~/.claude/.credentials.json`, headers `anthropic-version` + `anthropic-beta: oauth-2025-04-20,claude-code-20250219`). Subagent events carry `parent_tool_use_id`, `subagent_type`, `task_description`; background agents hand back via a `SubagentHandback` tool call and a synthetic `<agent-message>` user event; rewinds are `control_response` events with `rewound`/`precedingAssistantUuid`; `result` events mark turn ends. Bridged local sessions (`environment_kind: bridge`) are skipped (they are local files). Offline fallback: Desktop's IndexedDB blobs (`https_claude.ai_0.indexeddb.blob`), V8 structured clone inside Snappy, tail-only (~2.7 MB, `headCut`).
+- **Codex CLI:** `~/.codex/sessions/**/rollout-*.jsonl` (`session_meta`, `response_item` messages); titles from `session_index.jsonl`.
 
 ## Key design decisions
 
-1. **Why not a PreCompact hook?** `PreCompact` fires when compaction is already underway — its output never reaches the model, and there is no token headroom left for documentation work. Hence the 80% approximation via `PostToolUse` with a real token measurement from the session file's usage block.
-2. **Why does the agent stop instead of continuing?** The agent verifiably cannot trigger `/compact` itself (no SlashCommand tool exists, and hooks can't trigger compaction either — see the [tools reference](https://code.claude.com/docs/en/tools-reference.md)). The orderly stop with a next-steps list makes the compaction moment non-critical and puts the user in control.
-3. **Why does the next-steps list survive?** The `.jsonl` session file on disk is append-only and keeps the full history even after compaction. The extractor distills it into user messages + final answers — including the last answer with the list.
-4. **Threshold basis & measurement:** `autoCompactWindow` from `~/.claude/settings.json` **if set**, otherwise the model window (1M for `[1m]` models, 200k otherwise). The injected message always names the basis it used. The current context size is read from the latest usage block in the session file, **skipping sidechain (subagent) entries** — a subagent's usage describes its own, much smaller context and would delay the reminder in subagent-heavy sessions (fixed in v1.3.1). If the measured usage exceeds the guessed window (e.g. the settings model string lacks the `[1m]` suffix while the session really runs with 1M), a 1M window is inferred instead of reporting nonsense like "218%" (v1.3.2).
-5. **Two percentage scales:** Claude Code's context display measures usage against the *auto-compact point* (usable window minus buffer); this hook measures against the *raw* window. The UI percentage therefore runs ahead — it can show ~90% while the raw measure is ~78%. That is expected, not a malfunction: the hook fires at raw 80%, still before auto-compact (~90%+ raw). Silent runs below the threshold leave no transcript trace by design; proof the hooks are loaded in a session are the `Recovered session context — part i/M` blocks after a compaction.
-6. **Once-only & re-arm:** a marker file `/tmp/claude-doc-reminder-<session-id>` prevents repeat spam. When the context falls below 60% of the threshold after compaction, the marker is removed — the cycle is armed for the next round.
-7. **Detail level:** the skill asks the user (question card) which parts to import — Full / without subagent full reports / final answers only / minimal; after a compaction the hook injects an instruction (with per-level token estimates) to ask that question first; the agent then imports the chosen level (`RESTORE_MODE = "full"` restores unasked full injection). **Full extracts by default:** neither the skill nor the hooks truncate on their own (`--last`/`--max-chars` only on explicit user instruction; full-extract rule in SKILL.md). Every import reports its size: `Imported context: ~Xk tokens ≈ Y% of the …-token context window`.
+1. **Why not a PreCompact hook?** `PreCompact` fires when compaction is already underway — its output never reaches the model, and there is no token headroom left. Hence the 80% approximation via `PostToolUse` with a real token measurement from the session file's usage block.
+2. **Why does the agent stop instead of continuing?** The agent cannot trigger `/compact` (no such tool; hooks can't either). The orderly stop with a next-steps list makes the compaction moment non-critical and puts the user in control.
+3. **Why does the restore ask instead of injecting?** A hook cannot show a question card, and the user decides how much context to spend. The hook therefore injects an instruction plus per-level token estimates; the agent asks and imports. (`RESTORE_MODE = "full"` restores unasked, chunked injection — chunked because Claude Code replaces any hook output above ~10–12k chars with a 2 KB preview and a file path.)
+4. **Threshold measurement:** latest main-context usage block (sidechain entries skipped); basis `autoCompactWindow` if set, else the model window (`[1m]` → 1M, else 200k; a measured usage above the guess infers 1M). Claude Code's display measures against the auto-compact point, so it runs ahead of this percentage.
+5. **Once-only & re-arm:** marker file `/tmp/claude-doc-reminder-<session-id>`; removed when usage falls below 60% of the threshold after a compaction.
+6. **Turn model:** a turn ends at a real user message, a `result` event, an interruption, a slash command or a stop-hook prompt — never at a subagent report or background-task notice. Whether a user message is a new turn or an interjection depends on whether the agent's last message ended in a tool call.
+7. **Trees, duplicates, rewinds:** exact `uuid` duplicates (resumes re-append history) are removed first; only forks of two *real* user prompts under one parent are treated as rewinds (earlier sibling + descendants dropped). Following a single leaf chain proved to discard legitimate history; `/compact` artifacts must never count as user prompts.
+8. **Subagents:** registered from Agent-tool calls, `subagents/` files and in-stream `parent_tool_use_id` entries (user/assistant only — `tool_progress` events carry that id for ordinary tools). Summary = the shortest available text (typically the agent's closing note), report = the longest (hand-back, `SubagentHandback` message, own transcript, persisted file). Resumed agents are split into invocation segments at their resume prompts; the n-th block uses the n-th segment. Background agents are placed when their report arrives, launch/resume confirmations are skipped.
+9. **Workflows:** the Workflow tool result names the run's transcript dir; the task notification (user text or queued attachment) carries the result — truncated by Claude Code at ~8k chars, so the extract says so and relies on the complete per-agent `StructuredOutput` reports.
+10. **Full extracts by default, levels only by choice:** no truncation on the agent's own judgment; the four levels are strictly nested and monotonic in size.
 
 ## Tuning
 
 | Parameter | Where | Default | Effect |
 |---|---|---|---|
-| `REMIND_FRACTION` / env `DOC_REMINDER_FRACTION` | `pre_compact_docs_reminder.py` | `0.8` | Fraction of the window that triggers the checkpoint |
-| `RESET_FRACTION` | `pre_compact_docs_reminder.py` | `0.6` | Below this × threshold the marker re-arms |
-| `autoCompactWindow` | `~/.claude/settings.json` | unset (= model window) | Shrinks the effective window for auto-compact **and** the checkpoint threshold |
-| `LAST_USER_TURNS` / `MAX_CHARS_PER_MESSAGE` | `on_compact.py` | `None` (= everything) | Optional bounds for the re-injection |
+| `REMIND_FRACTION` / env `DOC_REMINDER_FRACTION` | `pre_compact_docs_reminder.py` | `0.8` | fraction of the window that triggers the checkpoint |
+| `RESET_FRACTION` | `pre_compact_docs_reminder.py` | `0.6` | below this × threshold the marker re-arms |
+| `RESTORE_MODE` | `on_compact.py` | `"ask"` | `"ask"` or `"full"` |
+| `CHUNK_CHARS`, `STAGGER_SECONDS` | `on_compact.py` | `9000`, `0.15` | chunked injection in `"full"` mode |
+| `autoCompactWindow` | `~/.claude/settings.json` | unset | shrinks the effective window for auto-compact **and** the checkpoint threshold |
 
 ## Limitations
 
-- Completeness audit (2026-09-25): Claude Code CLI and Claude Desktop *local* sessions are append-only jsonl files under `~/.claude/projects` — complete, but subject to `cleanupPeriodDays` (default 30 days; raise it). Codex rollouts are complete files. *Remote* claude.ai/code sessions are fetched completely from the Anthropic API (`/v1/code/sessions/<id>/events`, `cursor`/`limit` pagination, newest-first, back to sequence 1) with the CLI's OAuth token; only when the API is unavailable does the extractor fall back to Claude Desktop's IndexedDB cache (`~/Library/Application Support/Claude/IndexedDB/https_claude.ai_0.indexeddb.blob`, V8 structured-clone + Snappy via `v8idb.py`), which keeps only ~2.7 MB per session (`headCut`). `claude --cloud <id>` attach exists but is account-gated. In SDK/remote event streams, `result` events mark turn ends and are used as turn boundaries.
-- Rewinds: cloud event streams record a `/rewind` as a `control_response` (`rewound`, `precedingAssistantUuid`) — everything after that assistant message up to the rewind is discarded. CLI transcripts are trees (`uuid`/`parentUuid`): a rewind or edited resend forks two real user messages under one parent; only such forks are pruned (earlier sibling + descendants), never other forks (parallel tool results, resumed segments) — following a single leaf chain proved to discard legitimate history. Before that, exact `uuid` duplicates are removed: resumes re-append history into the same file, which otherwise doubles messages and looks like forks.
-
-- The skill's `--current` mode identifies the running session via the most recently written file (mtime) — with two parallel sessions in the same project, specify the session id instead. (The hooks are unaffected: they receive the exact `transcript_path` from the harness.)
-- Tool results only survive compaction to the extent the agent summarizes them into its final checkpoint answer (hence the mandatory last-tool-result summary).
-- If the user never compacts manually, auto-compact at ~90% is the fallback — the checkpoint has long been written by then.
+- `--current` identifies the running session by the most recently written file; with two parallel sessions in the same project, pass the id. Hooks are unaffected (they receive `transcript_path`).
+- Cloud sessions need a valid CLI login token; offline, only Desktop's tail-only cache is available.
+- Claude Code deletes CLI transcripts after `cleanupPeriodDays` (default 30) — raise it for long-term history.
+- Native Windows is unsupported (python3 / `/tmp`); use WSL.
