@@ -364,15 +364,17 @@ def workflow_result_to_markdown(body):
     if not body or "<result>" not in body:
         return structured_to_markdown(body)
     parts = []
-    m = re.search(r"<result>(.*?)(?:</result>|\.\.\. \(truncated[^\n]*)", body, re.DOTALL)
+    m = re.search(r"<result>(.*?)</result>", body, re.DOTALL)
     result = (m.group(1) if m else "").strip()
-    truncated = m is not None and "</result>" not in body[m.start():m.end() + 12]
-    rendered = structured_to_markdown(result) if result else ""
+    truncated = bool(re.search(r"\.\.\. \(truncated \d+ chars", result))
+    rendered = structured_to_markdown(result) if result and not truncated else ""
     if rendered and rendered is not result:
         parts.append(rendered)
+    elif truncated:
+        parts.append("*(the workflow's structured result is only available truncated in the "
+                     "notification — the complete per-agent reports follow below)*")
     elif result:
-        parts.append("*(the workflow's structured result was truncated in the notification; "
-                     "the complete per-agent reports follow below)*" if truncated else result)
+        parts.append(result)
     fm = re.search(r"<failures>(.*?)</failures>", body, re.DOTALL)
     if fm:
         fails = [l.strip() for l in fm.group(1).splitlines() if l.strip()]
@@ -402,8 +404,23 @@ def load_workflow_agents(wf_dir):
                 pass
         entries = list(iter_jsonl(f))
         handback, last_text = subagent_texts({"entries": entries})
-        agents.append({"name": meta.get("description") or f.stem[len("agent-"):],
-                       "phase": meta.get("workflowPhase"), "report": handback or last_text or ""})
+        name = meta.get("description")
+        if not name:  # older runs have no description: use the start of the agent's task
+            first = next((claude_user_text((e.get("message") or {}).get("content"))[0]
+                          for e in entries if e.get("type") == "user"
+                          and claude_user_text((e.get("message") or {}).get("content"))[0].strip()), "")
+            name = snippet(first, 70) if first else f.stem[len("agent-"):]
+        agents.append({"name": name, "phase": meta.get("workflowPhase"),
+                       "report": handback or last_text or ""})
+    seen = {}
+    for a in agents:  # parallel agents with identical prompts: number them
+        seen[a["name"]] = seen.get(a["name"], 0) + 1
+    counts = {k: v for k, v in seen.items() if v > 1}
+    idx = {}
+    for a in agents:
+        if a["name"] in counts:
+            idx[a["name"]] = idx.get(a["name"], 0) + 1
+            a["name"] = f"{a['name']} (#{idx[a['name']]})"
     phase_order = {}
     for a in agents:
         phase_order.setdefault(a["phase"], len(phase_order))
