@@ -374,12 +374,19 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
                     info = subagents.setdefault(b.get("id"), {"entries": [], "name": None, "type": None})
                     info["name"] = info.get("name") or inp.get("description") or inp.get("name")
                     info["type"] = info.get("type") or inp.get("subagent_type")
-        elif e.get("type") == "user":
-            for b in blocks_of(e):
-                if b.get("type") == "text":
-                    tm, um = TASK_ID_RE.search(b.get("text") or ""), TOOL_USE_ID_RE.search(b.get("text") or "")
-                    if tm and um:
-                        task_to_tool[tm.group(1).strip()] = um.group(1).strip()
+        elif e.get("type") == "user" or e.get("type") == "attachment":
+            texts = [b.get("text") or "" for b in blocks_of(e) if b.get("type") == "text"]
+            if e.get("type") == "attachment":
+                pr = (e.get("attachment") or {}).get("prompt")
+                texts = [pr if isinstance(pr, str) else "\n".join(
+                    b.get("text", "") for b in (pr or []) if isinstance(b, dict))]
+            for txt in texts:
+                tm, um = TASK_ID_RE.search(txt), TOOL_USE_ID_RE.search(txt)
+                if tm and um:
+                    tuid = um.group(1).strip()
+                    task_to_tool[tm.group(1).strip()] = tuid
+                    if "agent:" + tm.group(1).strip() in subagents:
+                        subagents[tuid] = subagents["agent:" + tm.group(1).strip()]
     for tid, tuid in task_to_tool.items():  # CLI: agent-<id>.jsonl keyed by task id
         if "agent:" + tid in subagents and tuid not in subagents:
             subagents[tuid] = subagents["agent:" + tid]
@@ -421,7 +428,8 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
         # (hand-back / SubagentHandback message / persisted file) is the report.
         report = max(candidates, key=len)
         short = min(candidates, key=len)
-        summary = short if len(short) < len(report) else ""
+        same = short == report or (report.startswith(short[:200]) and len(short) > 0.8 * len(report))
+        summary = "" if same else short
         turns.append({"role": "subagent", "name": sub_name(key), "summary": summary,
                       "report": report, "ts": ts})
 
@@ -482,6 +490,17 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
                                        if isinstance(b, dict) and b.get("type") == "text")
                 text = strip_reminders(str(prompt or "")).strip()
                 text = re.sub(r"^The user sent a new message while you were working:\s*", "", text)
+                if text.startswith("<task-notification>"):
+                    if not agent_busy:
+                        close_turn()
+                    um = TOOL_USE_ID_RE.search(text)
+                    if um and um.group(1).strip() in subagents:
+                        emit_subagent(um.group(1).strip(), "", ts, read_persisted(text))
+                    else:
+                        match = re.search(r"<summary>(.*?)</summary>", text, re.DOTALL)
+                        turns.append({"role": "event", "ts": ts, "text":
+                                      f"[task: {snippet(match.group(1), 100) if match else 'background task finished'}]"})
+                    continue
                 if text and not text.startswith("<") and not is_noise(text, CLAUDE_USER_NOISE_PREFIXES):
                     turns.append({"role": "user_interjection" if agent_busy or not seen_real_user
                                   else "user", "text": text, "ts": ts})
