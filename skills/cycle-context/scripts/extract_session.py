@@ -201,6 +201,9 @@ def parse_claude_entries(entries, meta, all_text=False):
             continue
         if entry.get("isSidechain") or entry.get("isSynthetic"):
             continue  # subagent traffic / synthetic (worker-generated) user events
+        if etype == "result":
+            flush_assistant()  # SDK/remote streams: end of an agent turn
+            continue
         if etype == "user":
             message = entry.get("message") or {}
             content = message.get("content")
@@ -482,7 +485,14 @@ def parse_remote_session(rec, blob_path, all_text=False):
     parsed = parse_claude_entries(tree.get("messages") or [], meta, all_text=all_text)
     first = next((t for t in parsed["turns"] if t["role"] == "user"
                   and not t["text"].lstrip().startswith("[")), None)
-    parsed["title"] = snippet(first["text"]) if first else (parsed.get("title") or "(remote session)")
+    if first:
+        parsed["title"] = snippet(first["text"])
+    else:
+        ans = next((t for t in parsed["turns"] if t["role"] == "assistant"), None)
+        parsed["title"] = ("(tail only) " + snippet(ans["text"])) if ans else "(remote session, no text)"
+    # a tail-only cache may hold answers but no user prompt: not "empty"
+    parsed["user_messages"] = parsed["user_messages"] or (1 if any(
+        t["role"] == "assistant" for t in parsed["turns"]) else 0)
     return parsed
 
 

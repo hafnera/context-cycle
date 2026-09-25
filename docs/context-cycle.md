@@ -94,7 +94,7 @@ Claude Code silently replaces any single hook output larger than **~10–12k cha
 
 ## Limitations
 
-- Claude Desktop (macOS): *local* coding sessions come from metadata JSON + the CLI transcript under `~/.claude/projects`; *remote* claude.ai/code sessions come from Desktop's IndexedDB cache (`~/Library/Application Support/Claude/IndexedDB/https_claude.ai_0.indexeddb.blob`, V8 structured-clone + Snappy, decoded by `v8idb.py`). Only sessions opened in Desktop are cached, long ones tail-only (`headCut`).
+- Claude Desktop (macOS): *local* coding sessions come from metadata JSON + the CLI transcript under `~/.claude/projects`; *remote* claude.ai/code sessions come from Desktop's IndexedDB cache (`~/Library/Application Support/Claude/IndexedDB/https_claude.ai_0.indexeddb.blob`, V8 structured-clone + Snappy, decoded by `v8idb.py`). Only sessions opened in Desktop are cached, and the cache keeps roughly the last 2.7 MB of events per session (`headCut`): for long sessions the user's early prompts are gone and only the recent assistant answers remain — the extract flags this and titles such sessions "(tail only)". In SDK/remote event streams, `result` events mark turn ends and are used as turn boundaries.
 
 - The skill's `--current` mode identifies the running session via the most recently written file (mtime) — with two parallel sessions in the same project, specify the session id instead. (The hooks are unaffected: they receive the exact `transcript_path` from the harness.)
 - Tool results only survive compaction to the extent the agent summarizes them into its final checkpoint answer (hence the mandatory last-tool-result summary).
