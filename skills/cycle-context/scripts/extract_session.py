@@ -360,6 +360,12 @@ def subagent_texts(info):
                 msg = (b.get("input") or {}).get("message")
                 if msg and (best_handback is None or len(msg) > len(best_handback)):
                     best_handback = msg
+            elif b.get("type") == "tool_use" and b.get("name") == "StructuredOutput":
+                # workflow agents with a result schema hand back JSON, not text
+                inp = b.get("input") or {}
+                msg = json.dumps(inp, ensure_ascii=False, indent=2) if isinstance(inp, dict) else str(inp)
+                if msg and (best_handback is None or len(msg) > len(best_handback)):
+                    best_handback = msg
             elif b.get("type") == "text" and (b.get("text") or "").strip():
                 last_text = b["text"].strip()
     return best_handback, last_text
@@ -570,11 +576,7 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
                         emit_workflow(um.group(1).strip(), text, ts)
                     elif um and um.group(1).strip() in subagents:
                         emit_subagent(um.group(1).strip(), "", ts, read_persisted(text))
-                    else:
-                        match = re.search(r"<summary>(.*?)</summary>", text, re.DOTALL)
-                        turns.append({"role": "event", "ts": ts, "text":
-                                      f"[task: {snippet(match.group(1), 100) if match else 'background task finished'}]"})
-                    continue
+                    continue  # other background tasks are tool traffic: not rendered
                 if text and not text.startswith("<") and not is_noise(text, CLAUDE_USER_NOISE_PREFIXES):
                     turns.append({"role": "user_interjection" if agent_busy or not seen_real_user
                                   else "user", "text": text, "ts": ts})
@@ -643,10 +645,7 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
                     emit_workflow(um.group(1).strip(), text, ts)
                 elif um and um.group(1).strip() in subagents:
                     emit_subagent(um.group(1).strip(), "", ts, read_persisted(text))
-                else:
-                    match = re.search(r"<summary>(.*?)</summary>", text, re.DOTALL)
-                    label = snippet(match.group(1), 100) if match else "background task finished"
-                    turns.append({"role": "event", "text": f"[task: {label}]", "ts": ts})
+                # other background tasks (e.g. Bash commands) are tool traffic: not rendered
                 continue
             if text and is_noise(text, CLAUDE_USER_NOISE_PREFIXES):
                 continue
