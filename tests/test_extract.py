@@ -372,9 +372,17 @@ class HookTests(unittest.TestCase):
 
     def test_reminder_threshold_and_window_inference(self):
         import pre_compact_docs_reminder as r
-        window, basis = r.effective_window(measured_tokens=650_000)
-        self.assertEqual(window, 1_000_000)
-        self.assertIn("inferred", basis)
+        home = Path(tempfile.mkdtemp()); (home / ".claude").mkdir()
+        (home / ".claude" / "settings.json").write_text(json.dumps({"model": "claude-opus-4-8"}))
+        saved = os.environ.get("HOME"); os.environ["HOME"] = str(home)
+        try:
+            self.assertEqual(r.effective_window()[0], 200_000)                  # 4.x model: 200k
+            window, basis = r.effective_window(measured_tokens=650_000)
+            self.assertEqual(window, 1_000_000); self.assertIn("inferred", basis)  # usage proves 1M
+            (home / ".claude" / "settings.json").write_text(json.dumps({"model": "claude-fable-5-1"}))
+            self.assertEqual(r.effective_window()[0], 1_000_000)                # Claude 5 family: 1M
+        finally:
+            os.environ["HOME"] = saved
         tmp = Path(tempfile.mkdtemp()); f = tmp / "s.jsonl"
         f.write_text(json.dumps({"type": "assistant", "message": {"usage": {"input_tokens": 100,
                      "cache_read_input_tokens": 900, "cache_creation_input_tokens": 0, "output_tokens": 0}}}) + "\n"
