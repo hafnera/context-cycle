@@ -59,8 +59,13 @@ REMINDER = (
 )
 
 
-def effective_window():
-    """Returns (window_tokens, basis_label). autoCompactWindow wins when set."""
+def effective_window(measured_tokens=None):
+    """Returns (window_tokens, basis_label). autoCompactWindow wins when set.
+
+    The model window is guessed from the settings model string ("[1m]" suffix
+    => 1M). That string can be stale or lack the suffix while the session
+    actually runs with a 1M window, so a measurement above the guessed window
+    proves the window must be the 1M one."""
     try:
         settings = json.loads((Path.home() / ".claude" / "settings.json").read_text())
     except (OSError, json.JSONDecodeError):
@@ -68,8 +73,11 @@ def effective_window():
     if isinstance(settings.get("autoCompactWindow"), int):
         return settings["autoCompactWindow"], "autoCompactWindow"
     model = settings.get("model") or ""
-    window = 1_000_000 if "[1m]" in model else 200_000
-    return window, "model context window"
+    window, basis = (1_000_000, "model context window") if "[1m]" in model \
+        else (200_000, "model context window")
+    if measured_tokens and measured_tokens > window:
+        window, basis = 1_000_000, "1M window inferred (usage exceeds 200k)"
+    return window, basis
 
 
 def current_context_tokens(transcript_path):
@@ -115,7 +123,7 @@ def cli_mode(mode):
         print("No session file found for this project.")
         return
     tokens = current_context_tokens(str(transcript))
-    window, basis = effective_window()
+    window, basis = effective_window(tokens)
     if tokens is None:
         print("Could not read context usage from the session file.")
         return
@@ -144,7 +152,7 @@ def main():
     tokens = current_context_tokens(transcript_path)
     if tokens is None:
         return
-    window, basis = effective_window()
+    window, basis = effective_window(tokens)
     threshold = int(window * REMIND_FRACTION)
     session = hook_input.get("session_id") or Path(transcript_path).stem
     marker = Path("/tmp") / f"claude-doc-reminder-{session}"

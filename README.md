@@ -91,7 +91,7 @@ Key options: `--agent claude|codex|all`, `--project PATH`, `--all-projects`, `--
 | `autoCompactWindow` | `~/.claude/settings.json` | unset (= model window) | Basis for both auto-compact and the checkpoint threshold, when set |
 | `LAST_USER_TURNS` / `MAX_CHARS_PER_MESSAGE` | `on_compact.py` | `None` (= everything) | Optional bounds for the post-compact re-injection |
 
-The threshold basis is `autoCompactWindow` **if set**, otherwise the model window (1M for `[1m]` models, 200k otherwise). The injected message always names the basis it used.
+The threshold basis is `autoCompactWindow` **if set**, otherwise the model window (1M for `[1m]` models, 200k otherwise). The injected message always names the basis it used. If the measured usage is larger than that guess (e.g. the settings model string has no `[1m]` suffix but the session runs with 1M), a 1M window is inferred — the message then says so.
 
 ## Notes
 

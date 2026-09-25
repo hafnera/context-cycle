@@ -412,6 +412,7 @@ def current_model_and_window():
     return model or "unknown, assuming 200k window", window
 
 
+
 def import_summary(chars):
     est_tokens = chars // 4
     model, window = current_model_and_window()
