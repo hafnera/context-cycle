@@ -38,7 +38,7 @@ RESTORE_MODE = "ask"
 DETAIL_LEVELS = [
     ("Full", []),
     ("Without subagent full reports", ["--no-subagent-reports"]),
-    ("Final answers only", ["--final-only"]),
+    ("Final answers only", ["--final-only", "--no-subagent-reports"]),
     ("Minimal", ["--final-only", "--no-subagents"]),
 ]
 # Optional bounds for the "full" mode injection. Both None: everything.

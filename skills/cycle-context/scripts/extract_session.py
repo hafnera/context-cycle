@@ -475,6 +475,8 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
             stripped = text.lstrip()
             am = AGENT_MSG_RE.search(text)
             if am:
+                if not agent_busy:
+                    close_turn()
                 key = task_to_tool.get(am.group(1)) or ("agent:" + am.group(1))
                 if key not in subagents:
                     key = am.group(1)
@@ -497,7 +499,8 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
                 turns.append({"role": "event", "text": "[user interrupted]", "ts": ts})
                 continue
             if stripped.startswith("<task-notification>"):
-                close_turn()
+                if not agent_busy:
+                    close_turn()  # the agent had finished; the notification starts a new response
                 um = TOOL_USE_ID_RE.search(text)
                 if um and um.group(1).strip() in subagents:
                     emit_subagent(um.group(1).strip(), "", ts, read_persisted(text))
