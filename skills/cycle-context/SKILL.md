@@ -1,6 +1,6 @@
 ---
 name: cycle-context
-description: Import a previous local agent session (Claude Code CLI, Claude Desktop local coding sessions on macOS, or Codex CLI) into the current conversation as condensed context — only the user's messages and each turn's final assistant answer, without tool calls, code edits, intermediate steps or thinking. Use when the user wants to continue from, reference, or "load" an earlier session, e.g. "hol den Kontext aus der letzten Session", "import the session where we built X", "what did we discuss yesterday in project Y", "füge die Session von gestern als Kontext hinzu".
+description: Import a previous agent session (Claude Code CLI, Claude Desktop local coding sessions and cached claude.ai/code remote sessions on macOS, or Codex CLI) into the current conversation as condensed context — only the user's messages and each turn's final assistant answer, without tool calls, code edits, intermediate steps or thinking. Use when the user wants to continue from, reference, or "load" an earlier session, e.g. "hol den Kontext aus der letzten Session", "import the session where we built X", "what did we discuss yesterday in project Y", "füge die Session von gestern als Kontext hinzu".
 ---
 
 # Session Context Import
@@ -11,7 +11,8 @@ Supported sources (parsed from local disk, nothing leaves the machine):
 
 - **Claude Code**: `~/.claude/projects/<project>/<session-id>.jsonl`
 - **Codex CLI**: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
-- **Claude Desktop (macOS) local coding sessions**: metadata in `~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json` (title, model, cwd), transcript is the matching `<cliSessionId>.jsonl` under `~/.claude/projects`. Listed as `[desktop]`. **Remote** claude.ai/code sessions (`session_…` ids, cloud sandboxes) keep NO local transcript and cannot be imported — tell the user so if they ask for one.
+- **Claude Desktop (macOS) local coding sessions**: metadata in `~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json` (title, model, cwd), transcript is the matching `<cliSessionId>.jsonl` under `~/.claude/projects`. Listed as `[desktop]`.
+- **claude.ai/code REMOTE sessions (macOS)**: read from Claude Desktop's IndexedDB cache (V8-serialized, Snappy-compressed — handled by `scripts/v8idb.py`). Listed as `[remote]`, only with `--all-projects` or `--agent remote` (they have no local project). Accepts the claude.ai id (`session_…`) or cache id (`cse_…`). Caveats to tell the user: only sessions that were opened in the Desktop app are cached, and long sessions are cached tail-only (`headCut` — the extract says so in its header).
 
 All commands use the bundled script (stdlib-only Python 3). `<skill>` below stands for this skill's base directory (announced when the skill loads):
 
@@ -30,7 +31,7 @@ python3 "<skill>/scripts/extract_session.py" list
 Defaults: sessions of **both agents** for the **current project directory**, newest first, max 15. Useful options:
 
 - `--all-projects` — the user references another project or "some session last week"
-- `--agent claude|desktop|codex` — the user names the tool ("die Codex Session", "die Desktop-Session", "Claude Code session")
+- `--agent claude|desktop|remote|codex` — the user names the tool ("die Codex Session", "die Desktop-Session", "die claude.ai/code Session", "Claude Code session")
 - `--grep "keyword"` — the user remembers a topic, not a date ("the session about the sankey widget")
 - `--project /path/to/dir` — sessions of a specific other project
 - `-n 30` — show more

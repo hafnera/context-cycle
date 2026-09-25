@@ -7,6 +7,8 @@ Supported agents:
   - Claude Desktop (macOS, local coding sessions): metadata under
     ~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json,
     transcript = ~/.claude/projects/*/<cliSessionId>.jsonl
+  - claude.ai/code REMOTE sessions (macOS): Claude Desktop's IndexedDB cache
+    (V8-serialized, Snappy-compressed), parsed via v8idb.py
 
 The condensed transcript keeps only real user messages and the FINAL
 assistant answer of each turn. Tool calls, tool results, intermediate
@@ -26,6 +28,8 @@ Stdlib only, no dependencies.
 
 import argparse
 import json
+import sys as _sys
+_sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
 import re
 import sys
 from datetime import datetime, timezone
@@ -36,6 +40,8 @@ CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 CODEX_INDEX_FILE = Path.home() / ".codex" / "session_index.jsonl"
 DESKTOP_SESSIONS_DIR = (Path.home() / "Library" / "Application Support" / "Claude"
                         / "claude-code-sessions")
+DESKTOP_IDB_BLOB_DIR = (Path.home() / "Library" / "Application Support" / "Claude"
+                        / "IndexedDB" / "https_claude.ai_0.indexeddb.blob")
 
 # A session file modified this recently is probably the one currently running.
 ACTIVE_WINDOW_SECONDS = 180
@@ -151,11 +157,17 @@ def is_noise(text, prefixes):
 
 
 def parse_claude_session(path, all_text=False):
-    """Return session dict with meta and condensed turns."""
-    turns = []  # {role: user|assistant|summary, text, ts}
-    pending = []  # [(message_id, text)] assistant texts of current turn
+    """Return session dict with meta and condensed turns (Claude Code jsonl)."""
     meta = {"agent": "claude", "path": str(path), "session_id": Path(path).stem,
             "cwd": None, "title": None, "first_ts": None, "last_ts": None}
+    return parse_claude_entries(iter_jsonl(path), meta, all_text=all_text)
+
+
+def parse_claude_entries(entries, meta, all_text=False):
+    """Condense an iterable of Claude Code-format entries (jsonl lines or the
+    Desktop app's cached remote-session events) into turns."""
+    turns = []  # {role: user|assistant|summary, text, ts}
+    pending = []  # [(message_id, text)] assistant texts of current turn
     seen_real_user = False
 
     def flush_assistant():
@@ -171,7 +183,9 @@ def parse_claude_session(path, all_text=False):
         if text.strip():
             turns.append({"role": "assistant", "text": text.strip(), "ts": None})
 
-    for entry in iter_jsonl(path):
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
         etype = entry.get("type")
         ts = parse_ts(entry.get("timestamp"))
         if ts:
@@ -415,6 +429,63 @@ def desktop_sessions(project=None, all_projects=False):
     return sorted(found, key=lambda mp: mp[1].stat().st_mtime, reverse=True)
 
 
+def remote_sessions():
+    """Claude Desktop's local cache of REMOTE claude.ai/code sessions.
+
+    The Desktop app caches every remote session it rendered as a V8-serialized
+    (often Snappy-compressed) IndexedDB value: {conversationUuid: "code:cse_…",
+    tree: {kind: "code_session", sessionType, messages: [Claude Code events…],
+    headCut}}. Only sessions opened in Desktop are cached, and a long session
+    may be cached tail-only (headCut). Returns [(record, blob_path)] newest first.
+    """
+    if not DESKTOP_IDB_BLOB_DIR.is_dir():
+        return []
+    try:
+        from v8idb import load_idb_blob
+    except ImportError:
+        return []
+    found = {}
+    for blob in DESKTOP_IDB_BLOB_DIR.rglob("*"):
+        if not blob.is_file() or blob.stat().st_size < 200:
+            continue
+        try:
+            head = blob.open("rb").read(64)
+            if b"conversationUuid" not in head and head[:3] != b"\xff\x11\x02":
+                continue
+            rec = load_idb_blob(blob.read_bytes())
+        except Exception:
+            continue
+        tree = rec.get("tree") if isinstance(rec, dict) else None
+        if not isinstance(tree, dict) or tree.get("kind") != "code_session":
+            continue
+        cid = str(rec.get("conversationUuid") or "")
+        written = float(rec.get("writtenAt") or 0)
+        if cid not in found or written > found[cid][2]:
+            found[cid] = (rec, blob, written)
+    return sorted(((r, b) for r, b, _ in found.values()),
+                  key=lambda rb: float(rb[0].get("writtenAt") or 0), reverse=True)
+
+
+def remote_session_id(rec):
+    cid = str(rec.get("conversationUuid") or "")
+    return cid.split(":", 1)[-1] if ":" in cid else cid   # "code:cse_X" -> "cse_X"
+
+
+def parse_remote_session(rec, blob_path, all_text=False):
+    tree = rec.get("tree") or {}
+    sid = remote_session_id(rec)
+    meta = {"agent": "remote", "path": str(blob_path), "session_id": sid,
+            "cwd": "claude.ai/code (remote session)", "title": None,
+            "first_ts": None, "last_ts": None,
+            "head_cut": bool(tree.get("headCut")),
+            "session_type": tree.get("sessionType")}
+    parsed = parse_claude_entries(tree.get("messages") or [], meta, all_text=all_text)
+    first = next((t for t in parsed["turns"] if t["role"] == "user"
+                  and not t["text"].lstrip().startswith("[")), None)
+    parsed["title"] = snippet(first["text"]) if first else (parsed.get("title") or "(remote session)")
+    return parsed
+
+
 def desktop_meta_for(path):
     """Desktop metadata for a transcript path, if it is a Desktop session."""
     for meta, p in desktop_sessions(all_projects=True):
@@ -433,6 +504,10 @@ def discover(agent, project, all_projects):
     files += [("desktop", p) for _, p in desktop]
     if agent in ("codex", "all"):
         files += [("codex", f) for f in codex_session_files(project, all_projects)]
+    if agent in ("remote", "all") and all_projects or agent == "remote":
+        # remote sessions have no local project; only shown with --all-projects
+        # or when asked for explicitly
+        files += [("remote", b) for _, b in remote_sessions()]
     return sorted(files, key=lambda af: af[1].stat().st_mtime, reverse=True)
 
 
@@ -473,6 +548,11 @@ def import_summary(chars):
 def parse_any(agent, path, all_text=False):
     if agent == "codex":
         return parse_codex_session(path, all_text=all_text)
+    if agent == "remote":
+        for rec, blob in remote_sessions():
+            if blob == path:
+                return parse_remote_session(rec, blob, all_text=all_text)
+        raise SystemExit(f"error: remote session cache not readable: {path}")
     parsed = parse_claude_session(path, all_text=all_text)
     if agent == "desktop":
         meta = desktop_meta_for(path) or {}
@@ -549,7 +629,8 @@ def truncate(text, max_chars):
 def render_markdown(parsed, max_chars=0):
     lines = []
     agent_name = {"claude": "Claude Code", "codex": "Codex CLI",
-                  "desktop": "Claude Desktop (local coding session)"}.get(parsed["agent"], parsed["agent"])
+                  "desktop": "Claude Desktop (local coding session)",
+                  "remote": "claude.ai/code remote session (Claude Desktop cache)"}.get(parsed["agent"], parsed["agent"])
     lines.append("# Imported session context")
     lines.append(f"- **Agent:** {agent_name}")
     lines.append(f"- **Project:** {parsed['cwd'] or '?'}")
@@ -559,6 +640,9 @@ def render_markdown(parsed, max_chars=0):
     lines.append("")
     lines.append("> Condensed transcript: user messages and each turn's final assistant "
                  "answer only. Tool calls, intermediate steps and thinking are omitted.")
+    if parsed.get("head_cut"):
+        lines.append("> ⚠ Desktop caches long remote sessions tail-only (head cut): the "
+                     "earliest part of this session is not available locally.")
     if parsed.get("omitted_users"):
         lines.append(f"> ⚠ The first {parsed['omitted_users']} user messages were "
                      "omitted (--last); rerun without --last for the full history.")
@@ -610,12 +694,11 @@ def cmd_extract(args):
         entries = discover(args.agent, args.project, args.all_projects)
         for sid in args.session_ids:
             if sid.startswith("session_"):
-                print(f"error: '{sid}' is a REMOTE claude.ai/code session (cloud). Claude Desktop "
-                      "keeps no local transcript for remote sessions, so it cannot be extracted "
-                      "from this machine. Only Desktop's LOCAL coding sessions (local_...) are "
-                      "available; list them with: list --agent desktop --all-projects",
-                      file=sys.stderr)
-                sys.exit(1)
+                sid = "cse_" + sid[len("session_"):]   # claude.ai URL id -> cache id
+            if sid.startswith("cse_") and args.agent not in ("remote", "all"):
+                args.agent = "remote"
+            if sid.startswith("cse_"):
+                entries = [e for e in discover("remote", args.project, True)]
             match = None
             for agent, path in entries:
                 stem = path.stem
@@ -625,9 +708,17 @@ def cmd_extract(args):
                     real_id = (meta or {}).get("id") or stem
                 elif agent == "desktop":
                     real_id = (desktop_meta_for(path) or {}).get("sessionId") or stem
+                elif agent == "remote":
+                    real_id = next((remote_session_id(r) for r, b in remote_sessions() if b == path), stem)
                 if stem.startswith(sid) or real_id.startswith(sid) or sid in stem or sid in real_id:
                     match = (agent, path)
                     break
+            if not match and sid.startswith("cse_"):
+                print(f"error: remote session '{sid}' is not in Claude Desktop's local cache. "
+                      "Only remote sessions that were opened in the Desktop app are cached "
+                      "(and long ones tail-only). Open the session in Claude Desktop once, "
+                      "then retry.", file=sys.stderr)
+                sys.exit(1)
             if not match:
                 print(f"error: no session matching '{sid}' "
                       f"(agent={args.agent}, scope={'all projects' if args.all_projects else 'current project'})",
@@ -673,9 +764,10 @@ def main():
     common.add_argument("--project", help="project path (default: current directory)")
     common.add_argument("--all-projects", action="store_true",
                         help="search sessions of all projects")
-    common.add_argument("--agent", choices=("claude", "desktop", "codex", "all"), default="all",
-                        help="which agent's sessions: claude (CLI), desktop (Claude Desktop "
-                             "local coding sessions, macOS), codex, or all (default)")
+    common.add_argument("--agent", choices=("claude", "desktop", "remote", "codex", "all"), default="all",
+                        help="which agent's sessions: claude (CLI), desktop (Claude Desktop local "
+                             "coding sessions, macOS), remote (claude.ai/code sessions from "
+                             "Claude Desktop's cache, macOS), codex, or all (default)")
     common.add_argument("--json", action="store_true", help="machine-readable output")
 
     p_list = sub.add_parser("list", parents=[common], help="list local sessions")
