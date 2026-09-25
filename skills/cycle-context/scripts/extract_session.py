@@ -301,6 +301,87 @@ def load_cli_subagents(session_path):
     return out
 
 
+def json_to_markdown(obj, depth=0):
+    """Readable Markdown for structured (JSON) agent/workflow results:
+    dict keys become bold labels, lists become bullets/numbered items,
+    strings keep their line breaks. Nesting is expressed by indentation."""
+    pad = "  " * depth
+    lines = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            label = str(k).replace("_", " ")
+            if isinstance(v, (dict, list)) and v:
+                lines.append(f"{pad}- **{label}:**")
+                lines.append(json_to_markdown(v, depth + 1))
+            else:
+                val = json_to_markdown(v, depth + 1) if isinstance(v, (dict, list)) else str(v)
+                if "\n" in val:
+                    lines.append(f"{pad}- **{label}:**")
+                    lines.extend(f"{pad}  {ln}" for ln in val.splitlines())
+                else:
+                    lines.append(f"{pad}- **{label}:** {val}")
+    elif isinstance(obj, list):
+        if not obj:
+            return f"{pad}*(empty)*"
+        for i, v in enumerate(obj, 1):
+            if isinstance(v, dict):
+                title = v.get("title") or v.get("name") or v.get("key") or v.get("id")
+                lines.append(f"{pad}{i}. **{title}**" if title else f"{pad}{i}.")
+                rest = {k: x for k, x in v.items() if not (title and k in ("title", "name", "key", "id") and x == title)}
+                lines.append(json_to_markdown(rest, depth + 1))
+            elif isinstance(v, list):
+                lines.append(f"{pad}{i}.")
+                lines.append(json_to_markdown(v, depth + 1))
+            else:
+                lines.append(f"{pad}- {v}")
+    else:
+        return f"{pad}{obj}"
+    return "\n".join(l for l in lines if l is not None)
+
+
+def structured_to_markdown(text):
+    """If `text` is JSON (optionally wrapped in <result>…</result>), render it
+    as Markdown; otherwise return it unchanged."""
+    if not text:
+        return text
+    body = text.strip()
+    m = re.match(r"^<result>(.*)</result>\s*$", body, re.DOTALL)
+    if m:
+        body = m.group(1).strip()
+    if not body[:1] in "{[":
+        return text
+    try:
+        obj = json.loads(body)
+    except json.JSONDecodeError:
+        return text
+    return json_to_markdown(obj)
+
+
+def workflow_result_to_markdown(body):
+    """A Workflow task notification carries <result>JSON</result> (possibly
+    truncated), <failures>…</failures> and <diagnostics>… (tool instructions).
+    Render the result as Markdown, the failures as a list, drop diagnostics."""
+    if not body or "<result>" not in body:
+        return structured_to_markdown(body)
+    parts = []
+    m = re.search(r"<result>(.*?)(?:</result>|\.\.\. \(truncated[^\n]*)", body, re.DOTALL)
+    result = (m.group(1) if m else "").strip()
+    truncated = m is not None and "</result>" not in body[m.start():m.end() + 12]
+    rendered = structured_to_markdown(result) if result else ""
+    if rendered and rendered is not result:
+        parts.append(rendered)
+    elif result:
+        parts.append("*(the workflow's structured result was truncated in the notification; "
+                     "the complete per-agent reports follow below)*" if truncated else result)
+    fm = re.search(r"<failures>(.*?)</failures>", body, re.DOTALL)
+    if fm:
+        fails = [l.strip() for l in fm.group(1).splitlines() if l.strip()]
+        if fails:
+            parts.append("**Failed workflow agents:**")
+            parts.extend(f"- {snippet(l, 200)}" for l in fails)
+    return "\n\n".join(parts) if parts else structured_to_markdown(body)
+
+
 WF_DIR_RE = re.compile(r"Transcript dir:\s*(\S+)")
 WF_SUMMARY_RE = re.compile(r"Summary:\s*(.*?)\s*Transcript dir:", re.DOTALL)
 
@@ -363,7 +444,7 @@ def subagent_texts(info):
             elif b.get("type") == "tool_use" and b.get("name") == "StructuredOutput":
                 # workflow agents with a result schema hand back JSON, not text
                 inp = b.get("input") or {}
-                msg = json.dumps(inp, ensure_ascii=False, indent=2) if isinstance(inp, dict) else str(inp)
+                msg = json_to_markdown(inp) if isinstance(inp, (dict, list)) else str(inp)
                 if msg and (best_handback is None or len(msg) > len(best_handback)):
                     best_handback = msg
             elif b.get("type") == "text" and (b.get("text") or "").strip():
@@ -499,6 +580,7 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
         if not body:
             body = re.sub(r"<task-notification>.*?</summary>", "", notification_text or "", flags=re.DOTALL)
             body = re.sub(r"</task-notification>", "", body).strip()
+        body = workflow_result_to_markdown(body)
         run_no = sum(1 for d in wf_runs if d == wf["dir"]) + 1
         wf_runs.append(wf["dir"])
         agents = [] if wf["dir"] in wf_seen_dirs else load_workflow_agents(wf["dir"])
