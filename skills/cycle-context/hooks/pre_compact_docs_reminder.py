@@ -16,8 +16,10 @@ approach to the threshold; after compaction shrinks the context, the marker
 re-arms automatically.
 
 Tuning: REMIND_FRACTION below (or env DOC_REMINDER_FRACTION). The effective
-window is autoCompactWindow from ~/.claude/settings.json if set, else 1M for
-"[1m]" models, else 200k.
+window is autoCompactWindow from ~/.claude/settings.json if set, else the
+window of the model the SESSION runs on (read from the transcript; the
+settings model is only the fallback): 1M for "[1m]" models and the Claude 5
+family, else 200k — and a measured usage above that proves the 1M window.
 """
 
 import json
@@ -59,25 +61,49 @@ REMINDER = (
 )
 
 
-def effective_window(measured_tokens=None):
+def effective_window(measured_tokens=None, model=None):
     """Returns (window_tokens, basis_label). autoCompactWindow wins when set.
 
-    The model window is guessed from the settings model string ("[1m]" suffix
-    => 1M). That string can be stale or lack the suffix while the session
-    actually runs with a 1M window, so a measurement above the guessed window
-    proves the window must be the 1M one."""
+    model: the session's model (from its transcript, see transcript_model);
+    without it the settings model string is used — which can be stale or differ
+    from the model the session actually runs on, so a measurement above the
+    guessed window proves the window must be the 1M one."""
     try:
         settings = json.loads((Path.home() / ".claude" / "settings.json").read_text())
     except (OSError, json.JSONDecodeError):
         settings = {}
     if isinstance(settings.get("autoCompactWindow"), int):
         return settings["autoCompactWindow"], "autoCompactWindow"
-    model = settings.get("model") or ""
+    model = model or settings.get("model") or ""
     is_1m = "[1m]" in model or re.search(r"-5(-\d+)?(\[|$)", model) is not None  # Claude 5 family: 1M
-    window, basis = (1_000_000, "model context window") if is_1m else (200_000, "model context window")
+    label = f"model context window ({model})" if model else "model context window"
+    window, basis = (1_000_000, label) if is_1m else (200_000, label)
     if measured_tokens and measured_tokens > window:
         window, basis = 1_000_000, "1M window inferred (usage exceeds 200k)"
     return window, basis
+
+
+def transcript_model(transcript_path):
+    """Model of the newest main-context assistant message (tail read)."""
+    try:
+        path = Path(transcript_path)
+        size = path.stat().st_size
+        with open(path, "rb") as f:
+            f.seek(max(0, size - 262_144))
+            tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in reversed(tail.splitlines()):
+        if '"model"' not in line or re.search(r'"isSidechain":\s*true', line):
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        message = entry.get("message") if isinstance(entry.get("message"), dict) else None
+        if entry.get("type") == "assistant" and message and message.get("model"):
+            return message["model"]
+    return None
 
 
 def current_context_tokens(transcript_path):
@@ -123,7 +149,7 @@ def cli_mode(mode):
         print("No session file found for this project.")
         return
     tokens = current_context_tokens(str(transcript))
-    window, basis = effective_window(tokens)
+    window, basis = effective_window(tokens, transcript_model(str(transcript)))
     if tokens is None:
         print("Could not read context usage from the session file.")
         return
@@ -152,7 +178,7 @@ def main():
     tokens = current_context_tokens(transcript_path)
     if tokens is None:
         return
-    window, basis = effective_window(tokens)
+    window, basis = effective_window(tokens, transcript_model(transcript_path))
     threshold = int(window * REMIND_FRACTION)
     session = hook_input.get("session_id") or Path(transcript_path).stem
     marker = Path("/tmp") / f"claude-doc-reminder-{session}"

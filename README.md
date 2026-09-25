@@ -50,7 +50,7 @@ Just describe the session; the agent finds it:
 - "Use cycle-context on the current session so you know again what this session is about" (great right after a compaction)
 - or explicitly: `/cycle-context` followed by a description
 
-The agent lists matching sessions **grouped by repo/project** with title, last-activity date and the estimated token size, picks the one that matches your description or shows you a short list to choose from, asks for the **detail level**, imports, and confirms what was imported including the import size (`Imported context: ~X.Xk tokens ≈ Y% of the …-token context window`).
+The agent lists matching sessions **grouped by repo/project** with title, last-activity date and the estimated token size, picks the one that matches your description or shows you a short list to choose from, asks for the **detail level**, imports, and confirms what was imported including the import size (`Imported context: ~X.Xk tokens ≈ Y% of the …-token context window (model: …, this session)`). The percentage refers to the window of the model the **running** session actually uses — read from its own transcript, not from settings.
 
 ### Detail levels (asked via question card before every import)
 
@@ -74,6 +74,7 @@ Per user turn: `## 👤 USER MESSAGE` → `### 🧭 SUBAGENT «name»` blocks (s
 | Claude Code CLI (incl. Cursor/IDE sessions) | `~/.claude/projects/<project>/<id>.jsonl` (+ `<id>/subagents/`) | append-only; complete |
 | Claude Desktop local sessions (macOS) | metadata in `~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json`, transcript = the matching CLI jsonl | listed as `[desktop]` with the Desktop title |
 | claude.ai/code cloud sessions | Anthropic API `/v1/code/sessions/<id>/events`, paginated back to the first event, with your CLI login token | listed as `[remote]` (`--all-projects` or `--agent remote`); `session_…` or `cse_…` ids; Desktop's IndexedDB cache is the offline fallback (tail-only) |
+| Cloud sessions **continued locally** (IDE/CLI takeover, "(fork)") | the local jsonl holds only a *replay* of the cloud main chain (no subagent events); the extractor identifies the original cloud session by the message/tool ids shared with the replay and uses its complete history (incl. subagent reports) up to the takeover, the local file for the rest | needs the CLI login token, cached under `~/.cache/context-cycle/`; `--cloud-origin ID` if the origin cannot be found, `--no-cloud` to stay offline (the header then warns that subagent reports are missing) |
 | Codex CLI | `~/.codex/sessions/**/rollout-*.jsonl` | titles from `session_index.jsonl` |
 
 **Transcript retention:** Claude Code deletes CLI transcripts after `cleanupPeriodDays` (default 30). For a complete long-term history set it high in `~/.claude/settings.json`, e.g. `"cleanupPeriodDays": 3650`.
@@ -95,7 +96,7 @@ python3 $X extract --current -o ctx.md            # the running session of this 
 python3 $X extract <id> --final-only --no-subagent-reports   # a lower detail level
 ```
 
-Options: `--agent claude|desktop|remote|codex|all`, `--project PATH`, `--all-projects`, `--grep TEXT`, `--current`, `--path FILE`, `--no-subagent-reports`, `--no-subagents`, `--final-only`, `--last N`, `--max-chars N`, `--json`, `-o FILE`. Every extract prints `Imported context: ~Xk tokens ≈ Y% …` on stderr.
+Options: `--agent claude|desktop|remote|codex|all`, `--project PATH`, `--all-projects`, `--grep TEXT`, `--current`, `--path FILE`, `--no-subagent-reports`, `--no-subagents`, `--final-only`, `--last N`, `--max-chars N`, `--cloud-origin ID`, `--no-cloud`, `--json`, `-o FILE`. Every extract prints `Imported context: ~Xk tokens ≈ Y% …` on stderr.
 
 ## Hooks and tuning
 
@@ -106,7 +107,7 @@ Options: `--agent claude|desktop|remote|codex|all`, `--project PATH`, `--all-pro
 | `RESTORE_MODE` | `on_compact.py` | `"ask"` | `"ask"` injects the detail-level instruction; `"full"` injects the whole transcript unasked (chunked) |
 | `autoCompactWindow` | `~/.claude/settings.json` | unset | basis for auto-compact and the checkpoint threshold when set |
 
-The checkpoint threshold is measured from the latest main-context usage block in the session file (subagent usage ignored) against the raw window — `autoCompactWindow` if set, else the model window (1M for `[1m]` models and the Claude 5 family, 200k otherwise; a larger measured usage infers 1M). Claude Code's own display measures against the auto-compact point, so it shows a higher percentage.
+The checkpoint threshold is measured from the latest main-context usage block in the session file (subagent usage ignored) against the raw window — `autoCompactWindow` if set, else the window of the model the session runs on, read from the transcript (1M for `[1m]` models and the Claude 5 family, 200k otherwise; a larger measured usage infers 1M). Claude Code's own display measures against the auto-compact point, so it shows a higher percentage.
 
 ## Tests
 
@@ -114,11 +115,12 @@ The checkpoint threshold is measured from the latest main-context usage block in
 python3 -m unittest discover -s tests -v
 ```
 
-Synthetic sessions cover tool calls, progress notes, interjections, rewinds, duplicates, sidechains, Agent-tool subagents incl. a resumed invocation, Workflow runs, background tasks, slash commands, Codex rollouts, the Desktop cache decoder (V8 + Snappy) and both hooks. The structural invariants (per-turn order, no noise leaks, identical user counts and monotonic sizes across detail levels) are asserted there and were additionally validated against 20+ MB real sessions.
+Synthetic sessions cover tool calls, progress notes, interjections, rewinds, duplicates, sidechains, Agent-tool subagents incl. a resumed invocation, Workflow runs, background tasks, slash commands, Codex rollouts, a locally continued cloud session (origin search, merge, cache, offline warning), model/window detection from the running session, the Desktop cache decoder (V8 + Snappy) and both hooks. The structural invariants (per-turn order, no noise leaks, identical user counts and monotonic sizes across detail levels) are asserted there and were additionally validated against 20+ MB real sessions.
 
 ## Notes and limits
 
 - Silent hook runs leave no trace in the transcript; proof of life after a compaction is the injected restore instruction.
+- Plugin hooks are resolved when a session starts: after a plugin update, sessions that are already running keep the previous hook scripts until they are restarted.
 - Cloud sessions need the CLI login token (macOS Keychain or `~/.claude/.credentials.json`); offline, Desktop's cache holds only the last ~2.7 MB per session.
 - Workflow results in task notifications are truncated by Claude Code at ~8k chars; the extract says so and relies on the per-agent reports, which are complete.
 - Secrets pasted into a session are part of its transcript and therefore of the extract.

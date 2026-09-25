@@ -421,5 +421,195 @@ class HookTests(unittest.TestCase):
         self.assertEqual(r2.stdout, "")
 
 
+
+
+class ContinuedCloudSessionTests(unittest.TestCase):
+    """A local session that continues a claude.ai/code cloud session: the file
+    holds only a replay of the cloud main chain (version "1.0", fresh uuids,
+    same message/tool ids). The original cloud session must be identified by
+    those ids and its history (with subagent reports) used up to the takeover."""
+
+    REPORT = "Long research report about visualization methods. " * 20
+
+    def cloud_entries(self):
+        c = "2026-01-01T09:%02d:00.000Z"
+        A = "toolu_A"
+        return [
+            {"type": "user", "uuid": "c1", "parentUuid": None, "timestamp": c % 0,
+             "message": {"role": "user", "content": "Build the analyzer"}},
+            {"type": "assistant", "uuid": "c2", "parentUuid": "c1", "timestamp": c % 1,
+             "message": {"id": "msg_c2", "role": "assistant", "model": "claude-opus-5-5", "stop_reason": "tool_use",
+                         "content": [{"type": "text", "text": "Launching the research agent."},
+                                     {"type": "tool_use", "id": A, "name": "Agent",
+                                      "input": {"description": "Research methods", "subagent_type": "general-purpose",
+                                                "run_in_background": True, "prompt": "Research"}}]}},
+            {"type": "user", "uuid": "c3", "parentUuid": "c2", "timestamp": c % 2,
+             "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": A,
+                                                      "content": "Async agent launched successfully."}]}},
+            {"type": "user", "uuid": "s1", "parentUuid": None, "timestamp": c % 3, "parent_tool_use_id": A,
+             "subagent_type": "general-purpose", "task_description": "Research methods",
+             "message": {"role": "user", "content": "Research"}},
+            {"type": "assistant", "uuid": "s2", "parentUuid": "s1", "timestamp": c % 4, "parent_tool_use_id": A,
+             "message": {"id": "msg_s2", "role": "assistant", "content": [{"type": "text", "text": self.REPORT}]}},
+            {"type": "assistant", "uuid": "s3", "parentUuid": "s2", "timestamp": c % 5, "parent_tool_use_id": A,
+             "message": {"id": "msg_s3", "role": "assistant",
+                         "content": [{"type": "text", "text": "Handed back. Key finding: spectrograms win."}]}},
+            {"type": "user", "uuid": "c4", "parentUuid": "c3", "timestamp": c % 6, "isSynthetic": True,
+             "message": {"role": "user", "content": "<agent-message from=\"TASK1\">\n[Subagent hand-back]\n"
+                                                    + self.REPORT + "</agent-message>"}},
+            {"type": "user", "uuid": "c5", "parentUuid": "c4", "timestamp": c % 7,
+             "message": {"role": "user", "content": "<task-notification><task-id>TASK1</task-id><tool-use-id>"
+                                                    + A + "</tool-use-id><status>completed</status>"
+                                                    "<summary>done</summary></task-notification>"}},
+            {"type": "assistant", "uuid": "c6", "parentUuid": "c5", "timestamp": c % 8,
+             "message": {"id": "msg_c6", "role": "assistant", "model": "claude-opus-5-5", "stop_reason": "end_turn",
+                         "content": [{"type": "text", "text": "Final: the analyzer is planned."}]}},
+            {"type": "result", "uuid": "c7", "parentUuid": "c6", "timestamp": c % 9},
+            # activity in the cloud AFTER the local takeover must not appear
+            {"type": "user", "uuid": "c8", "parentUuid": "c7", "timestamp": c % 30,
+             "message": {"role": "user", "content": "Something after the fork"}},
+            {"type": "assistant", "uuid": "c9", "parentUuid": "c8", "timestamp": c % 31,
+             "message": {"id": "msg_c9", "role": "assistant", "stop_reason": "end_turn",
+                         "content": [{"type": "text", "text": "post-fork answer"}]}},
+        ]
+
+    def local_file(self, tmp):
+        r = "2026-01-01T12:00:00.%03dZ"
+        A = "toolu_A"
+        def replay(kind, uuid, parent, i, message):
+            return {"type": kind, "uuid": uuid, "parentUuid": parent, "timestamp": r % i, "version": "1.0",
+                    "userType": "unknown", "isSidechain": False, "cwd": "/tmp/proj", "message": message}
+        lines = [
+            replay("user", "r1", None, 0, {"role": "user", "content": "Build the analyzer"}),
+            replay("assistant", "r2", "r1", 1, {"id": "msg_c2", "role": "assistant", "model": "claude-opus-5-5",
+                   "stop_reason": "tool_use", "content": [{"type": "text", "text": "Launching the research agent."},
+                   {"type": "tool_use", "id": A, "name": "Agent", "input": {"description": "Research methods"}}]}),
+            replay("user", "r3", "r2", 2, {"role": "user", "content": [{"type": "tool_result", "tool_use_id": A,
+                   "content": "Async agent launched successfully."}]}),
+            replay("user", "r4", "r3", 3, {"role": "user", "content": "<task-notification><task-id>TASK1</task-id>"
+                   "<tool-use-id>" + A + "</tool-use-id><status>completed</status><summary>done</summary>"
+                   "</task-notification>"}),
+            replay("assistant", "r5", "r4", 4, {"id": "msg_c6", "role": "assistant", "model": "claude-opus-5-5",
+                   "stop_reason": "end_turn", "content": [{"type": "text", "text": "Final: the analyzer is planned."}]}),
+            {"type": "bridge-session", "sessionId": "local-1", "bridgeSessionId": "cse_bridge"},
+            user("l1", "r5", "2026-01-01T12:05:00.000Z", "Continue locally: add tests"),
+            assistant("l2", "l1", "2026-01-01T12:06:00.000Z", [{"type": "text", "text": "Added the tests."}], mid="msg_l2"),
+        ]
+        f = tmp / "local-1.jsonl"
+        f.write_text("\n".join(json.dumps(l) for l in lines) + "\n")
+        return f
+
+    def test_origin_found_by_ids_and_history_merged(self):
+        tmp = Path(tempfile.mkdtemp())
+        f = self.local_file(tmp)
+        cloud = self.cloud_entries()
+        calls = []
+        orig = {"id": "cse_orig", "environment_kind": "anthropic_cloud", "title": "Cloud title",
+                "created_at": "2026-01-01T08:00:00Z", "updated_at": "2026-01-01T09:40:00Z"}
+        decoy = {"id": "cse_decoy", "environment_kind": "anthropic_cloud", "title": "Other",
+                 "created_at": "2026-01-01T07:00:00Z", "updated_at": "2026-01-01T11:00:00Z"}
+        bridge = {"id": "cse_bridge", "environment_kind": "bridge", "created_at": "2026-01-01T12:00:00Z"}
+
+        def fake_get(url, params=None):
+            calls.append((url, params))
+            if "cse_decoy" in url:
+                return {"data": [{"payload": {"message": {"id": "msg_other"}}}]}
+            if "cse_orig" in url:
+                return {"data": [{"payload": e} for e in cloud[:100]]}
+            return None
+        saved = (ex.CACHE_DIR, ex.cloud_token, ex.cloud_sessions, ex.cloud_get, ex.cloud_events, ex.cloud_session_meta)
+        ex.CACHE_DIR = tmp / "cache"
+        ex.cloud_token = lambda: "tok"
+        ex.cloud_sessions = lambda: [bridge, decoy, orig]
+        ex.cloud_get = fake_get
+        ex.cloud_events = lambda cid: list(cloud) if cid == "cse_orig" else []
+        ex.cloud_session_meta = lambda cid: orig
+        try:
+            parsed = ex.parse_claude_session(f)
+            md = ex.render_markdown(parsed)
+            # the decoy (closest activity) was checked first by its oldest page, then the origin
+            self.assertEqual([u.split("/")[-2] for u, p in calls if p and p.get("cursor") == 101],
+                             ["cse_decoy", "cse_orig"])
+            self.assertEqual(parsed["cloud_origin"], "cse_orig")
+            roles = [t["role"] for t in parsed["turns"]]
+            self.assertEqual([t["text"] for t in parsed["turns"] if t["role"] == "user"],
+                             ["Build the analyzer", "Continue locally: add tests"])
+            subs = [t for t in parsed["turns"] if t["role"] == "subagent"]
+            self.assertEqual(len(subs), 1)
+            self.assertEqual(subs[0]["name"], "Research methods (general-purpose)")
+            self.assertIn("Long research report", subs[0]["report"])
+            self.assertLess(roles.index("subagent"), roles.index("assistant"))  # subagent before final answer
+            self.assertNotIn("post-fork", md)           # cloud activity after the takeover is cut
+            self.assertIn("Added the tests.", md)      # local tail follows
+            self.assertEqual(parsed["title"], "Cloud title")
+            self.assertEqual(ex.fmt_ts(parsed["first_ts"]), "2026-01-01 " + ex.fmt_ts(cloud[0] and ex.parse_ts(cloud[0]["timestamp"]), with_date=False))
+            self.assertIn("cse_orig", md.split("---")[0])  # Source line names the origin
+            self.assertNotIn("⚠", md)
+            # cached: a second parse needs no session search and no event fetch
+            ex.cloud_sessions = lambda: (_ for _ in ()).throw(AssertionError("network used"))
+            ex.cloud_events = lambda cid: (_ for _ in ()).throw(AssertionError("network used"))
+            parsed2 = ex.parse_claude_session(f, cloud="cache")
+            self.assertEqual(parsed2["cloud_origin"], "cse_orig")
+            self.assertEqual(len([t for t in parsed2["turns"] if t["role"] == "subagent"]), 1)
+            # without any cloud access the local replay is used and the gap is flagged
+            ex.CACHE_DIR = tmp / "empty-cache"
+            ex.cloud_token = lambda: None
+            parsed3 = ex.parse_claude_session(f)
+            md3 = ex.render_markdown(parsed3)
+            self.assertTrue(parsed3.get("cloud_origin_missing"))
+            self.assertIn("⚠", md3)
+            self.assertIn("--cloud-origin", md3)
+            self.assertEqual([t["text"] for t in parsed3["turns"] if t["role"] == "user"],
+                             ["Build the analyzer", "Continue locally: add tests"])
+        finally:
+            (ex.CACHE_DIR, ex.cloud_token, ex.cloud_sessions, ex.cloud_get, ex.cloud_events,
+             ex.cloud_session_meta) = saved
+
+    def test_replay_detection_ignores_normal_sessions(self):
+        tmp = Path(tempfile.mkdtemp())
+        f = build_claude_session(tmp)
+        self.assertFalse(any(ex.is_replay_entry(e) for e in ex.iter_jsonl(f)))
+
+
+class ModelDetectionTests(unittest.TestCase):
+    def test_model_and_window_come_from_the_running_session(self):
+        home = Path(tempfile.mkdtemp())
+        proj = home / ".claude" / "projects" / "-tmp-x"; proj.mkdir(parents=True)
+        (home / ".claude" / "settings.json").write_text(json.dumps({"model": "claude-fable-5-1"}))
+        sid = "22222222-aaaa-bbbb-cccc-000000000002"
+        f = proj / f"{sid}.jsonl"
+        f.write_text(json.dumps({"type": "assistant", "isSidechain": False, "message": {
+            "model": "claude-opus-5-5", "usage": {"input_tokens": 10, "cache_read_input_tokens": 300_000,
+                                                  "cache_creation_input_tokens": 0, "output_tokens": 1}}}) + "\n"
+            + json.dumps({"type": "assistant", "isSidechain": True, "message": {"model": "claude-haiku-4-5",
+                          "usage": {"input_tokens": 1}}}) + "\n")
+        saved = (ex.CLAUDE_PROJECTS_DIR, os.environ.get("CLAUDE_CODE_SESSION_ID"), os.environ.get("HOME"))
+        ex.CLAUDE_PROJECTS_DIR = home / ".claude" / "projects"
+        os.environ["CLAUDE_CODE_SESSION_ID"] = sid; os.environ["HOME"] = str(home)
+        try:
+            model, window = ex.current_model_and_window()
+            self.assertEqual(model, "claude-opus-5-5, this session")   # transcript wins over settings
+            self.assertEqual(window, 1_000_000)
+            self.assertIn("1000k-token", ex.import_summary(4000))
+            os.environ["CLAUDE_CODE_SESSION_ID"] = "does-not-exist"
+            model, window = ex.current_model_and_window(project="/nowhere/at/all")
+            self.assertEqual(model, "claude-fable-5-1, from settings")  # fallback: settings
+            self.assertEqual(window, 1_000_000)
+            self.assertEqual(ex.model_window("claude-opus-4-8"), 200_000)
+            self.assertEqual(ex.model_window("claude-opus-4-8", usage=250_000), 1_000_000)
+            import pre_compact_docs_reminder as r
+            self.assertEqual(r.transcript_model(str(f)), "claude-opus-5-5")   # sidechain model ignored
+            (home / ".claude" / "settings.json").write_text(json.dumps({"model": "claude-opus-4-8"}))
+            self.assertEqual(r.effective_window(model="claude-opus-5-5")[0], 1_000_000)  # session model wins
+            self.assertEqual(r.effective_window()[0], 200_000)
+        finally:
+            ex.CLAUDE_PROJECTS_DIR = saved[0]
+            if saved[1] is None:
+                os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+            else:
+                os.environ["CLAUDE_CODE_SESSION_ID"] = saved[1]
+            os.environ["HOME"] = saved[2]
+
+
 if __name__ == "__main__":
     unittest.main()

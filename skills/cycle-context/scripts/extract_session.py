@@ -7,8 +7,11 @@ Supported agents:
   - Claude Desktop (macOS, local coding sessions): metadata under
     ~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json,
     transcript = ~/.claude/projects/*/<cliSessionId>.jsonl
-  - claude.ai/code REMOTE sessions (macOS): Claude Desktop's IndexedDB cache
+  - claude.ai/code REMOTE sessions: complete history via the Anthropic API
+    (CLI login token); offline fallback: Claude Desktop's IndexedDB cache
     (V8-serialized, Snappy-compressed), parsed via v8idb.py
+  - Cloud sessions continued locally: the local replay is replaced by the
+    original cloud session's complete history (incl. subagent reports)
 
 The condensed transcript keeps only real user messages and the FINAL
 assistant answer of each turn. Tool calls, tool results, intermediate
@@ -158,11 +161,169 @@ def is_noise(text, prefixes):
     return any(stripped.startswith(p) for p in prefixes)
 
 
-def parse_claude_session(path, all_text=True):
-    """Return session dict with meta and condensed turns (Claude Code jsonl)."""
+def parse_claude_session(path, all_text=True, cloud="auto", origin=None):
+    """Return session dict with meta and condensed turns (Claude Code jsonl).
+
+    A local session that CONTINUES a claude.ai/code cloud session holds only a
+    replay of the cloud's main chain (no subagent events). With cloud="auto"
+    the original cloud session is identified and its complete history (with
+    the subagent reports) replaces the replay; "cache" uses only already
+    cached cloud data (fast, for listings); "off" reads the local file alone.
+    origin: the cloud session id when known (session_… or cse_…)."""
     meta = {"agent": "claude", "path": str(path), "session_id": Path(path).stem,
             "cwd": None, "title": None, "first_ts": None, "last_ts": None}
-    return parse_claude_entries(iter_jsonl(path), meta, all_text=all_text, session_path=path)
+    entries = list(iter_jsonl(path))
+    if any(is_replay_entry(e) for e in entries):
+        origin = find_cloud_origin(entries, meta["session_id"], explicit=origin,
+                                   network=(cloud == "auto")) if cloud != "off" else None
+        parsed = parse_continued_session(path, entries, origin, all_text=all_text,
+                                         network=(cloud == "auto")) if origin else None
+        if parsed:
+            return parsed
+        meta["cloud_origin_missing"] = True  # rendered as a warning in the header
+    return parse_claude_entries(entries, meta, all_text=all_text, session_path=path)
+
+
+# ---------------------------------------------------------------------------
+# Locally continued cloud sessions
+# ---------------------------------------------------------------------------
+# When a claude.ai/code session is continued locally (IDE/CLI takeover), Claude
+# Code writes the cloud history into the new local jsonl as a REPLAY: entries
+# with version "1.0", userType "unknown" and fresh uuids/timestamps. The API
+# message ids and tool_use ids are preserved, the cloud's subagent events
+# (parent_tool_use_id) are not. Nothing in the file names the cloud session.
+
+CACHE_DIR = Path(os.environ.get("CONTEXT_CYCLE_CACHE") or (Path.home() / ".cache" / "context-cycle"))
+MAX_ORIGIN_CANDIDATES = 12
+
+
+def is_replay_entry(e):
+    return e.get("version") == "1.0" and bool(e.get("uuid")) and e.get("type") in ("user", "assistant")
+
+
+def _ids_of(entry):
+    """API message id + tool_use ids of an entry (stable across the replay)."""
+    ids = set()
+    m = entry.get("message")
+    if isinstance(m, dict):
+        if m.get("id"):
+            ids.add(m["id"])
+        content = m.get("content")
+        if isinstance(content, list):
+            for b in content:
+                if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id"):
+                    ids.add(b["id"])
+    return ids
+
+
+def replay_signature(entries):
+    """(stable ids of the replayed part, takeover timestamp)."""
+    ids, takeover = set(), None
+    for e in entries:
+        if is_replay_entry(e):
+            takeover = takeover or e.get("timestamp")
+            ids |= _ids_of(e)
+    return ids, takeover
+
+
+def _cache_read(name):
+    try:
+        return json.loads((CACHE_DIR / name).read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _cache_write(name, obj):
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        (CACHE_DIR / name).write_text(json.dumps(obj))
+    except OSError:
+        pass
+
+
+def find_cloud_origin(entries, session_id, explicit=None, network=True):
+    """The cloud session a locally continued session was forked from.
+
+    Candidates are the account's non-bridge cloud sessions created before the
+    takeover, checked closest-activity-first by their OLDEST 100 events for
+    ids shared with the replay (one API call each). The answer is cached per
+    local session. Returns the cse_ id or None."""
+    ids, takeover = replay_signature(entries)
+    if not ids:
+        return None
+    if explicit:
+        return "cse_" + explicit[len("session_"):] if explicit.startswith("session_") else explicit
+    cached = _cache_read(f"origin-{session_id}.json")
+    if cached and cached.get("origin"):
+        return cached["origin"]
+    if not network or not cloud_token():
+        return None
+    takeover = takeover or "~"
+    cands = [s for s in cloud_sessions()
+             if s.get("environment_kind") != "bridge" and (s.get("created_at") or "") <= takeover]
+    before = sorted((s for s in cands if (s.get("updated_at") or "") <= takeover),
+                    key=lambda s: s.get("updated_at") or "", reverse=True)
+    after = sorted((s for s in cands if (s.get("updated_at") or "") > takeover),
+                   key=lambda s: s.get("updated_at") or "")
+    for s in (before + after)[:MAX_ORIGIN_CANDIDATES]:
+        d = cloud_get(f"{CLOUD_API}/{s['id']}/events", {"limit": 100, "cursor": 101})  # sequence 1..100
+        for ev in (d or {}).get("data") or []:
+            if _ids_of(ev.get("payload") or {}) & ids:
+                _cache_write(f"origin-{session_id}.json", {"origin": s["id"], "title": s.get("title")})
+                return s["id"]
+    return None
+
+
+def cloud_events_cached(cse_id, must_contain=None, network=True):
+    """Cloud events, cached on disk (the forked-from part of a session never
+    changes). Refetched when the cache lacks an id the local replay has."""
+    name = f"events-{cse_id}.json"
+    cached = _cache_read(name)
+    if cached is not None and (not must_contain or any(must_contain & _ids_of(e) for e in cached)):
+        return cached
+    if not network or not cloud_token():
+        return cached
+    entries = cloud_events(cse_id)
+    if entries:
+        _cache_write(name, entries)
+    return entries or cached
+
+
+def parse_continued_session(path, entries, origin, all_text=True, network=True):
+    """Local session forked from a cloud session: the cloud stream (complete,
+    with subagent events, rewinds applied) supplies the history up to the
+    takeover, the local file everything after it. None if unavailable."""
+    ids, takeover = replay_signature(entries)
+    cloud = cloud_events_cached(origin, must_contain=ids, network=network)
+    if not cloud:
+        return None
+    cloud = apply_rewinds(linearize_tree(cloud))
+    cut = max((i for i, e in enumerate(cloud)
+               if not e.get("parent_tool_use_id") and _ids_of(e) & ids), default=None)
+    if cut is None:
+        return None
+    parent_ids = {b.get("id") for e in cloud[:cut + 1] for b in blocks_of(e)
+                  if b.get("type") == "tool_use"}
+    head = cloud[:cut + 1] + [e for e in cloud[cut + 1:]  # agents still running at takeover
+                              if e.get("parent_tool_use_id") in parent_ids]
+    blank = {"agent": "claude", "path": str(path), "session_id": Path(path).stem,
+             "cwd": None, "title": None, "first_ts": None, "last_ts": None}
+    parsed = parse_claude_entries(head, dict(blank), all_text=all_text)
+    tail = parse_claude_entries([e for e in entries if not is_replay_entry(e)], dict(blank),
+                                all_text=all_text, session_path=path)
+    parsed["turns"] = parsed["turns"] + tail["turns"]
+    parsed["user_messages"] = sum(1 for t in parsed["turns"] if t["role"] == "user")
+    parsed["subagents"] = sum(1 for t in parsed["turns"] if t["role"] == "subagent")
+    parsed["cwd"] = tail["cwd"] or parsed["cwd"]
+    parsed["last_ts"] = tail["last_ts"] or parsed["last_ts"]
+    cached = _cache_read(f"origin-{Path(path).stem}.json") or {}
+    title = cached.get("title") or ((cloud_session_meta(origin) or {}).get("title") if network else None)
+    parsed["title"] = title or tail["title"] or parsed["title"]
+    parsed["cloud_origin"] = origin
+    parsed["source"] = (f"continued cloud session — history up to the local takeover "
+                        f"({fmt_ts(parse_ts(takeover))}) from the original cloud session `{origin}` "
+                        f"(cloud API, complete, incl. subagent reports), the rest from the local transcript")
+    return parsed
 
 
 def linearize_tree(entries):
@@ -251,7 +412,8 @@ OUTPUT_FILE_RE = re.compile(r"<output-file>(.*?)</output-file>", re.DOTALL)
 
 
 def blocks_of(entry):
-    content = (entry.get("message") or {}).get("content")
+    message = entry.get("message")  # cloud system events carry a plain string here
+    content = message.get("content") if isinstance(message, dict) else None
     if isinstance(content, str):
         return [{"type": "text", "text": content}]
     return [b for b in (content or []) if isinstance(b, dict)]
@@ -647,6 +809,9 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
             continue
         if etype == "summary" and entry.get("summary"):
             meta["title"] = meta["title"] or entry["summary"]
+            continue
+        if etype == "custom-title" and entry.get("customTitle"):
+            meta["title"] = meta["title"] or snippet(entry["customTitle"])
             continue
         if etype == "user" and entry.get("isSynthetic") and not entry.get("parent_tool_use_id"):
             # synthetic hand-back of a background subagent (cloud streams)
@@ -1201,33 +1366,87 @@ def fmt_tokens(tokens):
     return f"~{tokens/1000:.1f}k tok" if tokens >= 1000 else f"~{tokens} tok"
 
 
-def current_model_and_window():
-    """Best-effort: the current model from user settings, and its context window.
+def running_session_transcript(project=None):
+    """The transcript of the session this script runs in (CLAUDE_CODE_SESSION_ID,
+    set by Claude Code for Bash commands), else the most recently written
+    session file of the project."""
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CLAUDE_SESSION_ID")
+    if sid:
+        hits = list(CLAUDE_PROJECTS_DIR.glob(f"*/{sid}.jsonl"))
+        if hits:
+            return hits[0]
+    project_dir = CLAUDE_PROJECTS_DIR / munge_path(str(Path(project or Path.cwd()).resolve()))
+    files = sorted(project_dir.glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
+    return files[0] if files else None
 
-    Models with the "[1m]" suffix run with a 1M-token window; everything else
-    is assumed to use the standard 200k window.
-    """
-    model = None
+
+def transcript_model_and_usage(path, tail_bytes=262_144):
+    """(model of the newest main-context assistant message, largest context
+    usage seen in the file's tail) — read from the transcript, not settings."""
     try:
-        settings = json.loads((Path.home() / ".claude" / "settings.json").read_text())
-        model = settings.get("model")
-    except (OSError, json.JSONDecodeError):
-        pass
-    window = 1_000_000 if model and ("[1m]" in model or re.search(r"-5(-\d+)?(\[|$)", model)) else 200_000
-    return model or "unknown, assuming 200k window", window
+        path = Path(path)
+        size = path.stat().st_size
+        with open(path, "rb") as f:
+            f.seek(max(0, size - tail_bytes))
+            tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None, 0
+    model, usage = None, 0
+    for line in reversed(tail.splitlines()):
+        if '"model"' not in line or re.search(r'"isSidechain":\s*true', line):
+            continue
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        m = e.get("message") if isinstance(e.get("message"), dict) else None
+        if not m or e.get("type") != "assistant":
+            continue
+        model = model or m.get("model")
+        u = m.get("usage") or {}
+        if "input_tokens" in u:
+            usage = max(usage, u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
+                        + u.get("cache_creation_input_tokens", 0) + u.get("output_tokens", 0))
+    return model, usage
 
 
+def model_window(model, usage=0):
+    """Context window of a model id: 1M for "[1m]" models and the Claude 5
+    family, else 200k; a measured usage above that proves the 1M window."""
+    is_1m = bool(model) and ("[1m]" in model or re.search(r"-5(-\d+)?(\[|$)", model) is not None)
+    window = 1_000_000 if is_1m else 200_000
+    if usage and usage > window:
+        window = 1_000_000
+    return window
 
-def import_summary(chars):
+
+def current_model_and_window(project=None):
+    """The model the RUNNING session uses (from its transcript) and its
+    context window; the settings.json model is only the fallback."""
+    path = running_session_transcript(project)
+    model, usage = transcript_model_and_usage(path) if path else (None, 0)
+    origin = "this session"
+    if not model:
+        try:
+            model = json.loads((Path.home() / ".claude" / "settings.json").read_text()).get("model")
+        except (OSError, json.JSONDecodeError):
+            model = None
+        origin = "from settings"
+    if not model:
+        return "unknown, assuming 200k window", 200_000
+    return f"{model}, {origin}", model_window(model, usage)
+
+
+def import_summary(chars, project=None):
     est_tokens = chars // 4
-    model, window = current_model_and_window()
+    model, window = current_model_and_window(project)
     pct = est_tokens / window * 100
     pct_str = "<0.1" if 0 < pct < 0.1 else f"{pct:.1f}"
     return (f"Imported context: ~{est_tokens/1000:.1f}k tokens ≈ {pct_str}% of the "
             f"{window//1000}k-token context window (model: {model})")
 
 
-def parse_any(agent, path, all_text=True):
+def parse_any(agent, path, all_text=True, cloud="auto", origin=None):
     if agent == "codex":
         return parse_codex_session(path, all_text=all_text)
     if agent == "remote":
@@ -1237,7 +1456,7 @@ def parse_any(agent, path, all_text=True):
             if blob == path:
                 return parse_remote_session(rec, blob, all_text=all_text)
         raise SystemExit(f"error: remote session cache not readable: {path}")
-    parsed = parse_claude_session(path, all_text=all_text)
+    parsed = parse_claude_session(path, all_text=all_text, cloud=cloud, origin=origin)
     if agent == "desktop":
         meta = desktop_meta_for(path) or {}
         parsed["agent"] = "desktop"
@@ -1268,7 +1487,7 @@ def cmd_list(args):
                          "est_tokens": None, "cloud_context_tokens": ctx.get("used_tokens"),
                          "status": s.get("status"), "active": False, "path": str(path)})
             continue
-        parsed = parse_any(agent, path)
+        parsed = parse_any(agent, path, cloud="cache")  # listings never wait for the network
         if parsed["user_messages"] == 0 and not args.include_empty:
             continue
         if args.grep:
@@ -1366,6 +1585,12 @@ def render_markdown(parsed, max_chars=0):
                  "are always omitted.")
     if parsed.get("source"):
         lines.append(f"> Source: {parsed['source']}.")
+    if parsed.get("cloud_origin_missing"):
+        lines.append("> ⚠ This session continues a claude.ai/code cloud session; the local file holds "
+                     "only a replay of the cloud's main chain, so the reports of subagents launched "
+                     "in the cloud are missing here. The original cloud session could not be "
+                     "identified or fetched (offline / not logged in / --no-cloud): log in with the "
+                     "claude CLI and rerun, or pass --cloud-origin <session id>.")
     if parsed.get("head_cut"):
         lines.append("> ⚠ Desktop caches long remote sessions tail-only (head cut): the "
                      "earliest part of this session is not available locally.")
@@ -1467,14 +1692,18 @@ def render_markdown(parsed, max_chars=0):
 def cmd_extract(args):
     targets = []
     if args.current:
-        # The currently running session: the most recently written session file
-        # of this project. Inside Claude Code that is a claude session.
+        # The currently running session: CLAUDE_CODE_SESSION_ID when set, else
+        # the most recently written session file of this project.
         agent = "claude" if args.agent == "all" else args.agent
-        entries = discover(agent, args.project, False)
-        if not entries:
-            print("error: no current session found for this project", file=sys.stderr)
-            sys.exit(1)
-        targets = [entries[0]]
+        running = running_session_transcript(args.project) if agent == "claude" else None
+        if running:
+            targets = [("claude", running)]
+        else:
+            entries = discover(agent, args.project, False)
+            if not entries:
+                print("error: no current session found for this project", file=sys.stderr)
+                sys.exit(1)
+            targets = [entries[0]]
     elif args.path:
         agent = args.agent if args.agent != "all" else None
         if agent is None:
@@ -1528,7 +1757,8 @@ def cmd_extract(args):
 
     outputs = []
     for agent, path in targets:
-        parsed = parse_any(agent, path, all_text=not args.final_only)
+        parsed = parse_any(agent, path, all_text=not args.final_only,
+                           cloud="off" if args.no_cloud else "auto", origin=args.cloud_origin)
         if agent == "codex":
             titles = codex_index_titles()
             if parsed["session_id"] in titles:
@@ -1564,7 +1794,7 @@ def cmd_extract(args):
         print(f"Wrote {len(result):,} chars ({total_turns} turns) to {args.out}")
     else:
         print(result)
-    print(import_summary(len(result)), file=sys.stderr)
+    print(import_summary(len(result), args.project), file=sys.stderr)
 
 
 def main():
@@ -1607,6 +1837,12 @@ def main():
     p_ext.add_argument("--last", type=int, default=0,
                        help="only keep the last N user messages and their answers")
     p_ext.add_argument("-o", "--out", help="write result to file instead of stdout")
+    p_ext.add_argument("--cloud-origin", metavar="ID",
+                       help="for a locally continued cloud session: the original cloud session "
+                            "(session_… or cse_…) if it cannot be identified automatically")
+    p_ext.add_argument("--no-cloud", action="store_true",
+                       help="never contact the cloud API (a continued cloud session is then "
+                            "extracted from the local replay only, without its subagent reports)")
     p_ext.set_defaults(func=cmd_extract)
 
     args = parser.parse_args()

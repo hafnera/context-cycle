@@ -12,6 +12,7 @@ Supported sources (parsed from local disk, nothing leaves the machine):
 - **Claude Code**: `~/.claude/projects/<project>/<session-id>.jsonl`
 - **Codex CLI**: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
 - **Claude Desktop (macOS) local coding sessions**: metadata in `~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json` (title, model, cwd), transcript is the matching `<cliSessionId>.jsonl` under `~/.claude/projects`. Listed as `[desktop]`.
+- **Cloud sessions continued locally** (a claude.ai/code session taken over in the IDE/CLI): the local jsonl holds only a replay of the cloud main chain without the cloud subagents' reports. The extractor identifies the original cloud session automatically (shared message/tool ids), fetches its complete history and uses it up to the takeover — first run ~20 s, then cached. If the header shows a ⚠ "continues a cloud session" warning, the origin could not be fetched: tell the user, and rerun with `--cloud-origin <session_… id>` when they know it. Listings show such sessions with local-only sizes unless the cloud data is already cached.
 - **claude.ai/code REMOTE (cloud) sessions**: fetched **complete** from the Anthropic API (`/v1/code/sessions/<id>/events`, paginated back to sequence 1) using the logged-in Claude Code CLI's OAuth token (macOS Keychain / `~/.claude/.credentials.json`). Listed as `[remote]` with `--all-projects` or `--agent remote` (metadata-only rows: title, repo, status, session context size). Accepts the claude.ai id (`session_…`) or API id (`cse_…`). Offline or logged out, Claude Desktop's IndexedDB cache is the fallback — but that cache is tail-only for long sessions (`headCut`, flagged in the extract header). The extract's `Source:` line tells which one was used; report it to the user.
 
 All commands use the bundled script (stdlib-only Python 3). `<skill>` below stands for this skill's base directory (announced when the skill loads):
@@ -84,6 +85,8 @@ Extract options:
 - `--final-only` / `--no-subagent-reports` / `--no-subagents` — the detail levels from step 2 (**only as chosen by the user**)
 - `--current` — the currently running session of this project (see below)
 - `--path FILE` — extract a specific `.jsonl` directly (bypasses discovery)
+- `--cloud-origin ID` — for a locally continued cloud session whose origin was not found automatically
+- `--no-cloud` — never contact the cloud API (a continued cloud session then lacks its subagent reports; the header says so)
 - `--json` — structured output instead of markdown
 - Multiple id prefixes are allowed in one call.
 
@@ -103,7 +106,7 @@ This resolves to the most recently written session file of the current project, 
 
 After ingesting, tell the user in 2–4 sentences what context was imported (session title, time range, number of turns, main topics) so they can verify it's the right one — and explicitly whether it was the **full** extract (default) or limited on their instruction.
 
-**Always report the import size.** Every extract prints an `Imported context: ~X.Xk tokens ≈ Y% of the …-token context window (model: …)` line on stderr — relay exactly these numbers (tokens in k, percentage of the current model's context window) to the user in your confirmation. If the line is missing, compute chars/4 yourself and say the window was assumed.
+**Always report the import size.** Every extract prints an `Imported context: ~X.Xk tokens ≈ Y% of the …-token context window (model: …, this session)` line on stderr — relay exactly these numbers (tokens in k, percentage of the context window) to the user in your confirmation. The model and window are those of the **running** session, read from its transcript (`from settings` marks the fallback). If the line is missing, compute chars/4 yourself and say the window was assumed.
 
 Then continue with the user's actual task, using the imported context.
 
