@@ -31,6 +31,7 @@ import json
 import sys as _sys
 _sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -432,6 +433,134 @@ def desktop_sessions(project=None, all_projects=False):
     return sorted(found, key=lambda mp: mp[1].stat().st_mtime, reverse=True)
 
 
+# ---------------------------------------------------------------------------
+# claude.ai/code cloud sessions via the Anthropic API (complete history)
+# ---------------------------------------------------------------------------
+
+CLOUD_API = "https://api.anthropic.com/v1/code/sessions"
+_cloud_cache = {"token": None, "sessions": None, "events": {}}
+
+
+def cloud_token():
+    """OAuth access token of the logged-in Claude Code CLI (macOS Keychain,
+    else ~/.claude/.credentials.json). None when unavailable."""
+    if _cloud_cache["token"] is not None:
+        return _cloud_cache["token"] or None
+    raw = None
+    try:
+        raw = subprocess.run(["security", "find-generic-password", "-s",
+                              "Claude Code-credentials", "-w"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        pass
+    if not raw:
+        try:
+            raw = (Path.home() / ".claude" / ".credentials.json").read_text()
+        except OSError:
+            raw = ""
+    try:
+        token = (json.loads(raw).get("claudeAiOauth") or {}).get("accessToken")
+    except (json.JSONDecodeError, AttributeError):
+        token = None
+    _cloud_cache["token"] = token or ""
+    return token
+
+
+def cloud_get(url, params=None):
+    import urllib.request, urllib.parse
+    token = cloud_token()
+    if not token:
+        return None
+    if params:
+        url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {token}", "anthropic-version": "2023-06-01",
+        "anthropic-beta": "oauth-2025-04-20,claude-code-20250219",
+        "User-Agent": "context-cycle/1.6"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except Exception as exc:  # offline, expired token, 4xx …
+        cloud_get.last_error = str(exc)
+        return None
+cloud_get.last_error = None
+
+
+def cloud_sessions():
+    """All claude.ai/code sessions of the account, newest first (cached)."""
+    if _cloud_cache["sessions"] is not None:
+        return _cloud_cache["sessions"]
+    out, cursor = [], None
+    for _ in range(50):  # safety bound: 50 pages
+        d = cloud_get(CLOUD_API, {"cursor": cursor} if cursor else None)
+        if not d or not d.get("data"):
+            break
+        out.extend(d["data"])
+        cursor = d.get("next_cursor")
+        if not cursor:
+            break
+    _cloud_cache["sessions"] = out
+    return out
+
+
+def cloud_events(cse_id):
+    """Every event of a cloud session, oldest first (paginates the API back
+    to sequence 1). Returns Claude-Code-style entries for parse_claude_entries."""
+    if cse_id in _cloud_cache["events"]:
+        return _cloud_cache["events"][cse_id]
+    events, cursor = [], None
+    for _ in range(2000):  # 100 events/page
+        params = {"limit": 100}
+        if cursor:
+            params["cursor"] = cursor
+        d = cloud_get(f"{CLOUD_API}/{cse_id}/events", params)
+        if not d or not d.get("data"):
+            break
+        events.extend(d["data"])
+        nxt = d.get("next_cursor")
+        if not nxt or nxt == cursor or int(nxt) <= 1:
+            break
+        cursor = nxt
+    events.sort(key=lambda e: int(e.get("sequence_num") or 0))
+    entries = []
+    for ev in events:
+        payload = ev.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        entry = dict(payload)
+        entry.setdefault("type", ev.get("event_type"))
+        entry.setdefault("timestamp", ev.get("created_at"))
+        entries.append(entry)
+    _cloud_cache["events"][cse_id] = entries
+    return entries
+
+
+def cloud_session_meta(cse_id):
+    for s in cloud_sessions():
+        if s.get("id") == cse_id:
+            return s
+    return cloud_get(f"{CLOUD_API}/{cse_id}") or {}
+
+
+def cloud_project_label(s):
+    for o in ((s.get("config") or {}).get("outcomes") or []):
+        repo = (o.get("git_info") or {}).get("repo")
+        if repo:
+            return f"cloud: {repo}"
+    return "claude.ai/code (cloud session)"
+
+
+def parse_cloud_session(cse_id, all_text=False):
+    s = cloud_session_meta(cse_id) or {}
+    rs = s.get("response_shape") or s
+    meta = {"agent": "remote", "path": f"{CLOUD_API}/{cse_id}", "session_id": cse_id,
+            "cwd": cloud_project_label(rs), "title": rs.get("title"),
+            "first_ts": None, "last_ts": None, "source": "cloud API (complete history)"}
+    parsed = parse_claude_entries(cloud_events(cse_id), meta, all_text=all_text)
+    parsed["title"] = rs.get("title") or parsed.get("title")
+    return parsed
+
+
 def remote_sessions():
     """Claude Desktop's local cache of REMOTE claude.ai/code sessions.
 
@@ -482,6 +611,7 @@ def parse_remote_session(rec, blob_path, all_text=False):
             "first_ts": None, "last_ts": None,
             "head_cut": bool(tree.get("headCut")),
             "session_type": tree.get("sessionType")}
+    meta["source"] = "Claude Desktop cache (tail-only fallback; cloud API unavailable)"
     parsed = parse_claude_entries(tree.get("messages") or [], meta, all_text=all_text)
     first = next((t for t in parsed["turns"] if t["role"] == "user"
                   and not t["text"].lstrip().startswith("[")), None)
@@ -516,9 +646,31 @@ def discover(agent, project, all_projects):
         files += [("codex", f) for f in codex_session_files(project, all_projects)]
     if agent in ("remote", "all") and all_projects or agent == "remote":
         # remote sessions have no local project; only shown with --all-projects
-        # or when asked for explicitly
-        files += [("remote", b) for _, b in remote_sessions()]
-    return sorted(files, key=lambda af: af[1].stat().st_mtime, reverse=True)
+        # or when asked for explicitly. Cloud API (complete history) first,
+        # Claude Desktop's tail-only cache as offline fallback.
+        cloud = [s for s in cloud_sessions() if s.get("environment_kind") != "bridge"]
+        if cloud:
+            files += [("remote", CloudRef(s)) for s in cloud]
+        else:
+            files += [("remote", b) for _, b in remote_sessions()]
+    return sorted(files, key=lambda af: ref_mtime(af[1]), reverse=True)
+
+
+class CloudRef:
+    """Stands in for a Path for cloud sessions (id + updated_at)."""
+    def __init__(self, s):
+        self.id = s.get("id"); self.meta = s
+        ts = parse_ts(s.get("updated_at"))
+        self.mtime = ts.timestamp() if ts else 0
+        self.stem = self.id
+    def __str__(self):
+        return f"{CLOUD_API}/{self.id}"
+    def __fspath__(self):
+        return str(self)
+
+
+def ref_mtime(ref):
+    return ref.mtime if isinstance(ref, CloudRef) else ref.stat().st_mtime
 
 
 # ---------------------------------------------------------------------------
@@ -559,6 +711,8 @@ def parse_any(agent, path, all_text=False):
     if agent == "codex":
         return parse_codex_session(path, all_text=all_text)
     if agent == "remote":
+        if isinstance(path, CloudRef):
+            return parse_cloud_session(path.id, all_text=all_text)
         for rec, blob in remote_sessions():
             if blob == path:
                 return parse_remote_session(rec, blob, all_text=all_text)
@@ -583,6 +737,17 @@ def cmd_list(args):
     for agent, path in entries:
         if len(rows) >= args.limit:
             break
+        if isinstance(path, CloudRef):
+            s = path.meta; ctx = (s.get("external_metadata") or {}).get("context_usage") or {}
+            if args.grep and args.grep.lower() not in (s.get("title") or "").lower():
+                continue
+            rows.append({"agent": "remote", "session_id": path.id,
+                         "project": cloud_project_label(s), "title": s.get("title"),
+                         "user_messages": None, "start": fmt_ts(parse_ts(s.get("created_at"))),
+                         "end": fmt_ts(parse_ts(s.get("updated_at"))), "condensed_chars": None,
+                         "est_tokens": None, "cloud_context_tokens": ctx.get("used_tokens"),
+                         "status": s.get("status"), "active": False, "path": str(path)})
+            continue
         parsed = parse_any(agent, path)
         if parsed["user_messages"] == 0 and not args.include_empty:
             continue
@@ -593,7 +758,7 @@ def cmd_list(args):
                 continue
         if agent == "codex" and parsed["session_id"] in codex_titles:
             parsed["title"] = codex_titles[parsed["session_id"]]
-        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        mtime = datetime.fromtimestamp(ref_mtime(path), tz=timezone.utc)
         active = (now - mtime).total_seconds() < ACTIVE_WINDOW_SECONDS
         condensed_chars = len(render_markdown(parsed))
         rows.append({
@@ -625,6 +790,12 @@ def cmd_list(args):
         for r in group:
             flag = "  *ACTIVE* (probably the running session)" if r["active"] else ""
             sid = r["session_id"][:8] if r["session_id"] else "?"
+            if r.get("est_tokens") is None:  # cloud session: metadata only
+                ctx = r.get("cloud_context_tokens")
+                extra = f"{r.get('status') or ''}, session ctx ~{int(ctx)/1000:.0f}k" if ctx else (r.get("status") or "")
+                print(f"   [{r['agent']}] {sid}  {r['end']}  {'  ? msgs':>8}  {'(cloud)':>10}  "
+                      f"{snippet(r['title'] or '', 60)}  [{extra}]")
+                continue
             print(f"   [{r['agent']}] {sid}  {r['end']}  {r['user_messages']:>3} msgs  "
                   f"{fmt_tokens(r['est_tokens']):>10}  {snippet(r['title'] or '', 70)}{flag}")
 
@@ -640,7 +811,7 @@ def render_markdown(parsed, max_chars=0):
     lines = []
     agent_name = {"claude": "Claude Code", "codex": "Codex CLI",
                   "desktop": "Claude Desktop (local coding session)",
-                  "remote": "claude.ai/code remote session (Claude Desktop cache)"}.get(parsed["agent"], parsed["agent"])
+                  "remote": "claude.ai/code remote session"}.get(parsed["agent"], parsed["agent"])
     lines.append("# Imported session context")
     lines.append(f"- **Agent:** {agent_name}")
     lines.append(f"- **Project:** {parsed['cwd'] or '?'}")
@@ -650,6 +821,8 @@ def render_markdown(parsed, max_chars=0):
     lines.append("")
     lines.append("> Condensed transcript: user messages and each turn's final assistant "
                  "answer only. Tool calls, intermediate steps and thinking are omitted.")
+    if parsed.get("source"):
+        lines.append(f"> Source: {parsed['source']}.")
     if parsed.get("head_cut"):
         lines.append("> ⚠ Desktop caches long remote sessions tail-only (head cut): the "
                      "earliest part of this session is not available locally.")
@@ -719,16 +892,22 @@ def cmd_extract(args):
                 elif agent == "desktop":
                     real_id = (desktop_meta_for(path) or {}).get("sessionId") or stem
                 elif agent == "remote":
-                    real_id = next((remote_session_id(r) for r, b in remote_sessions() if b == path), stem)
+                    real_id = path.id if isinstance(path, CloudRef) else next(
+                        (remote_session_id(r) for r, b in remote_sessions() if b == path), stem)
                 if stem.startswith(sid) or real_id.startswith(sid) or sid in stem or sid in real_id:
                     match = (agent, path)
                     break
             if not match and sid.startswith("cse_"):
-                print(f"error: remote session '{sid}' is not in Claude Desktop's local cache. "
-                      "Only remote sessions that were opened in the Desktop app are cached "
-                      "(and long ones tail-only). Open the session in Claude Desktop once, "
-                      "then retry.", file=sys.stderr)
-                sys.exit(1)
+                if cloud_token() and cloud_sessions():
+                    # not in the list (e.g. very old) — try the id directly
+                    if cloud_get(f"{CLOUD_API}/{sid}/events", {"limit": 1}):
+                        match = ("remote", CloudRef({"id": sid}))
+                if not match:
+                    why = ("cloud API unavailable (" + str(cloud_get.last_error or "no CLI login token")
+                           + ") and the session is not in Claude Desktop's local cache")
+                    print(f"error: remote session '{sid}': {why}. Log in with the claude CLI "
+                          "(the token is reused) for complete cloud history.", file=sys.stderr)
+                    sys.exit(1)
             if not match:
                 print(f"error: no session matching '{sid}' "
                       f"(agent={args.agent}, scope={'all projects' if args.all_projects else 'current project'})",
