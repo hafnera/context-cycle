@@ -37,9 +37,16 @@ Defaults: sessions of **both agents** for the **current project directory**, new
 - `-n 30` — show more
 - `--json` — machine-readable (fields include `session_id` and `path`)
 
+The user usually does **not** know session ids — work from their description:
+
+- Project/repo named or implied → `--project PATH` or the current directory; "some session last week", "in another project" → `--all-projects`.
+- A topic ("the session about the sankey widget") → `--grep "sankey"`; titles in the list are the sessions' own titles, so they usually match the user's wording.
+- A tool named ("the Codex session", "the cloud session", "the Desktop session") → `--agent codex|remote|desktop`.
+- A date ("yesterday", "last Friday") → compare with the last-activity column.
+
 Interpreting the list:
 
-- Sessions are grouped by **project entity** (`📁` header per repo/directory, ordered by most recent activity). Each row shows `[agent] id  last-activity  #user-msgs  ~tokens  title`, where `~tokens` is the estimated context cost of the **condensed** extract (chars/4) — mention it to the user when relevant, but see the full-extract rule below.
+- Sessions are grouped by **project entity** (`📁` header per repo/directory, ordered by most recent activity). Each row shows `[agent] id  last-activity  #user-msgs  ~tokens  title`, where `~tokens` is the estimated context cost of the **Full** extract (chars/4). Cloud sessions (`[remote]`) show metadata only (title, repo, status, the session's own context size).
 - A row marked `*ACTIVE*` is almost certainly **this currently running session** (or another session running in parallel).
 - Match the user's description (topic, date, project). If exactly one session fits, proceed without asking. If several plausibly fit, show the user the shortlist (title, date, token estimate) and ask which one.
 

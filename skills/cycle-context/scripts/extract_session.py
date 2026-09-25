@@ -293,7 +293,7 @@ def load_cli_subagents(session_path):
             except (OSError, json.JSONDecodeError):
                 meta = {}
         agent_id = f.stem[len("agent-"):]
-        info = {"entries": list(iter_jsonl(f)), "agent_id": agent_id,
+        info = {"entries": list(iter_jsonl(f)), "agent_id": agent_id, "from_file": True,
                 "name": meta.get("description"), "type": meta.get("agentType")}
         key = meta.get("toolUseId") or agent_id
         out[key] = info
@@ -490,6 +490,8 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
         if not key:
             continue
         info = subagents.setdefault(key, {"entries": [], "name": None, "type": None, "agent_id": aid})
+        if info.get("from_file"):
+            continue  # the subagents/ transcript is authoritative; don't mix in-file copies into it
         info["entries"].append(e)
         if e.get("task_description") and not info.get("name"):
             info["name"] = e["task_description"]
@@ -831,10 +833,14 @@ def parse_codex_session(path, all_text=True):
         nonlocal pending
         if not pending:
             return
-        text = "\n\n".join(pending) if all_text else pending[-1]
+        notes = [p for p in pending if p.strip()]
         pending = []
-        if text.strip():
-            turns.append({"role": "assistant", "text": text.strip(), "ts": None})
+        if not notes:
+            return
+        if all_text:
+            for n in notes[:-1]:
+                turns.append({"role": "assistant_progress", "text": n.strip(), "ts": None})
+        turns.append({"role": "assistant", "text": notes[-1].strip(), "ts": None})
 
     for entry in iter_jsonl(path):
         ts = parse_ts(entry.get("timestamp"))
