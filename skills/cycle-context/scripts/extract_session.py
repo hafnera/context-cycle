@@ -199,8 +199,8 @@ def parse_claude_entries(entries, meta, all_text=False):
         if etype == "summary" and entry.get("summary"):
             meta["title"] = meta["title"] or entry["summary"]
             continue
-        if entry.get("isSidechain"):
-            continue
+        if entry.get("isSidechain") or entry.get("isSynthetic"):
+            continue  # subagent traffic / synthetic (worker-generated) user events
         if etype == "user":
             message = entry.get("message") or {}
             content = message.get("content")
