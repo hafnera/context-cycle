@@ -482,6 +482,7 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
                       "report": report, "ts": ts})
 
     wf_seen_dirs = set()
+    wf_runs = []
 
     def emit_workflow(key, notification_text, ts):
         wf = workflows.get(key)
@@ -498,6 +499,8 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
         if not body:
             body = re.sub(r"<task-notification>.*?</summary>", "", notification_text or "", flags=re.DOTALL)
             body = re.sub(r"</task-notification>", "", body).strip()
+        run_no = sum(1 for d in wf_runs if d == wf["dir"]) + 1
+        wf_runs.append(wf["dir"])
         agents = [] if wf["dir"] in wf_seen_dirs else load_workflow_agents(wf["dir"])
         wf_seen_dirs.add(wf["dir"])
         report = None
@@ -508,7 +511,8 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
                 parts.append(a["report"] or "*(no report text)*")
                 parts.append("")
             report = "\n".join(parts)
-        turns.append({"role": "subagent", "name": f"Workflow: {wf['summary']}", "summary": body,
+        label = f"Workflow: {wf['summary']}" + (f" (resumed run {run_no})" if run_no > 1 else "")
+        turns.append({"role": "subagent", "name": label, "summary": body,
                       "report": report, "ts": ts, "workflow_agents": len(agents)})
 
     def close_turn():
@@ -1290,7 +1294,7 @@ def render_markdown(parsed, max_chars=0):
             elif s.get("report"):
                 lines.append("*(the main agent received the full report directly; it follows below)*")
             elif s.get("report_omitted"):
-                lines.append("*(subagent finished; its full report is omitted at this detail level)*")
+                lines.append("*(subagent finished; full report omitted at this detail level)*")
             else:
                 lines.append("*(subagent finished; no report text available)*")
             if s.get("report"):
