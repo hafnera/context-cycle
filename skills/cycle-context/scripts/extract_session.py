@@ -164,9 +164,70 @@ def parse_claude_session(path, all_text=False):
     return parse_claude_entries(iter_jsonl(path), meta, all_text=all_text)
 
 
+def linearize_tree(entries):
+    """Claude Code transcripts are trees (uuid/parentUuid). A /rewind or an
+    edited resend creates a FORK: two real user messages sharing one parent.
+    Only such forks are pruned — the earlier sibling and all its descendants
+    are dropped, the later one wins. Other forks (parallel tool results,
+    hook attachments, resumed segments) are left untouched, because following
+    a single leaf chain would also discard legitimate history."""
+    ents = [e for e in entries if isinstance(e, dict)]
+    if not any(e.get("uuid") and "parentUuid" in e for e in ents):
+        return ents
+    children = {}
+    for i, e in enumerate(ents):
+        if e.get("uuid"):
+            children.setdefault(e.get("parentUuid"), []).append(i)
+
+    def is_user_text(e):
+        if e.get("type") != "user" or e.get("isMeta") or e.get("isSidechain"):
+            return False
+        text, has_tool_result, _ = claude_user_text((e.get("message") or {}).get("content"))
+        return bool(text.strip()) and not has_tool_result
+
+    dropped = set()
+    for parent, kids in children.items():
+        if parent is None:
+            continue
+        forks = [i for i in kids if is_user_text(ents[i])]
+        if len(forks) < 2:
+            continue
+        for i in forks[:-1]:  # every sibling but the last (file order) loses
+            stack = [i]
+            while stack:
+                k = stack.pop()
+                if k in dropped:
+                    continue
+                dropped.add(k)
+                stack.extend(children.get(ents[k].get("uuid"), []))
+    return [e for i, e in enumerate(ents) if i not in dropped]
+
+
+def apply_rewinds(entries):
+    """Cloud event streams record rewinds as control_response events with
+    response.rewound and precedingAssistantUuid: everything after that
+    assistant message up to the rewind is discarded."""
+    out = []
+    for e in entries:
+        if e.get("type") == "control_response":
+            resp = (e.get("response") or {}).get("response") or {}
+            if resp.get("rewound") and resp.get("precedingAssistantUuid"):
+                target = resp["precedingAssistantUuid"]
+                pos = next((k for k in range(len(out) - 1, -1, -1)
+                            if out[k].get("uuid") == target), None)
+                if pos is not None:
+                    del out[pos + 1:]
+            continue
+        if e.get("type") == "control_request":
+            continue
+        out.append(e)
+    return out
+
+
 def parse_claude_entries(entries, meta, all_text=False):
     """Condense an iterable of Claude Code-format entries (jsonl lines or the
     Desktop app's cached remote-session events) into turns."""
+    entries = apply_rewinds(linearize_tree(entries))
     turns = []  # {role: user|assistant|summary, text, ts}
     pending = []  # [(message_id, text)] assistant texts of current turn
     seen_real_user = False
