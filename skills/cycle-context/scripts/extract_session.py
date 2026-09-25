@@ -314,7 +314,7 @@ def json_to_markdown(obj, depth=0):
                 lines.append(f"{pad}- **{label}:**")
                 lines.append(json_to_markdown(v, depth + 1))
             else:
-                val = json_to_markdown(v, depth + 1) if isinstance(v, (dict, list)) else str(v)
+                val = json_to_markdown(v, depth + 1).strip() if isinstance(v, (dict, list)) else str(v)
                 if "\n" in val:
                     lines.append(f"{pad}- **{label}:**")
                     lines.extend(f"{pad}  {ln}" for ln in val.splitlines())
@@ -328,7 +328,8 @@ def json_to_markdown(obj, depth=0):
                 title = v.get("title") or v.get("name") or v.get("key") or v.get("id")
                 lines.append(f"{pad}{i}. **{title}**" if title else f"{pad}{i}.")
                 rest = {k: x for k, x in v.items() if not (title and k in ("title", "name", "key", "id") and x == title)}
-                lines.append(json_to_markdown(rest, depth + 1))
+                if rest:
+                    lines.append(json_to_markdown(rest, depth + 1))
             elif isinstance(v, list):
                 lines.append(f"{pad}{i}.")
                 lines.append(json_to_markdown(v, depth + 1))
@@ -336,7 +337,7 @@ def json_to_markdown(obj, depth=0):
                 lines.append(f"{pad}- {v}")
     else:
         return f"{pad}{obj}"
-    return "\n".join(l for l in lines if l is not None)
+    return "\n".join(l for l in lines if l)
 
 
 def structured_to_markdown(text):
