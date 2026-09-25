@@ -300,9 +300,8 @@ def load_cli_subagents(session_path):
     return out
 
 
-def subagent_report(info):
-    """Full final report of a subagent: SubagentHandback message (background
-    agents hand back this way), else its last assistant text."""
+def subagent_texts(info):
+    """(handback_message, last_assistant_text) of a subagent's own transcript."""
     best_handback, last_text = None, None
     for e in info.get("entries") or []:
         if e.get("type") != "assistant":
@@ -314,7 +313,7 @@ def subagent_report(info):
                     best_handback = msg
             elif b.get("type") == "text" and (b.get("text") or "").strip():
                 last_text = b["text"].strip()
-    return best_handback or last_text
+    return best_handback, last_text
 
 
 def parse_claude_entries(entries, meta, all_text=True, session_path=None):
@@ -383,18 +382,22 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
             return
         emitted.add(key)
         info = subagents.get(key) or {}
-        full = subagent_report(info)
-        if persisted_hint:
-            full = max([full or "", persisted_hint], key=len) or None
-        summary = (summary or "").strip()
-        if summary.startswith("Async agent launched"):
-            summary = ""
-        attach = bool(full) and (not summary or "<persisted-output>" in summary
-                                 or len(full.strip()) > len(summary))
-        if summary.startswith("<persisted-output>"):  # keep only the preview part readable
-            summary = re.sub(r"^<persisted-output>\s*", "", summary).strip()
+        received = (summary or "").strip()
+        if received.startswith("Async agent launched"):
+            received = ""
+        handback, last_text = subagent_texts(info)
+        candidates = [c.strip() for c in (received, handback, last_text, persisted_hint) if c and c.strip()]
+        candidates = [c for c in candidates if not c.startswith("<persisted-output>")] or candidates
+        if not candidates:
+            turns.append({"role": "subagent", "name": sub_name(key), "summary": "", "report": None, "ts": ts})
+            return
+        # The subagent's short closing note is the summary; the longest text
+        # (hand-back / SubagentHandback message / persisted file) is the report.
+        report = max(candidates, key=len)
+        short = min(candidates, key=len)
+        summary = short if len(short) < len(report) else ""
         turns.append({"role": "subagent", "name": sub_name(key), "summary": summary,
-                      "report": full if attach and full.strip() != summary else None, "ts": ts})
+                      "report": report, "ts": ts})
 
     def close_turn():
         """Promote the last progress note of the turn to the final answer;
@@ -426,6 +429,20 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
             continue
         if etype == "summary" and entry.get("summary"):
             meta["title"] = meta["title"] or entry["summary"]
+            continue
+        if etype == "user" and entry.get("isSynthetic") and not entry.get("parent_tool_use_id"):
+            # synthetic hand-back of a background subagent (cloud streams)
+            text_s, _, _ = claude_user_text((entry.get("message") or {}).get("content"))
+            am = AGENT_MSG_RE.search(text_s or "")
+            if am:
+                if not agent_busy:
+                    close_turn()
+                key = task_to_tool.get(am.group(1)) or ("agent:" + am.group(1))
+                if key not in subagents:
+                    key = am.group(1)
+                body = re.sub(r"^\s*\[Subagent hand-back\][^\n]*\n?", "", text_s[am.end():], count=1)
+                body = re.sub(r"</agent-message>\s*$", "", body.strip())
+                emit_subagent(key, body, ts, read_persisted(text_s))
             continue
         if entry.get("isSidechain") or entry.get("isSynthetic") or entry.get("parent_tool_use_id"):
             continue  # subagent traffic (handled via the registry) / synthetic events
@@ -1103,10 +1120,19 @@ def render_markdown(parsed, max_chars=0):
     lines.append(f"- **Time:** {fmt_ts(parsed['first_ts'])} → {fmt_ts(parsed['last_ts'])}")
     lines.append(f"- **User messages:** {parsed['user_messages']}")
     lines.append("")
-    lines.append("> Condensed transcript. Structure per turn: **USER MESSAGE** → **SUBAGENT** "
-                 "results (summary + full report) → **MAIN AGENT** section (🔹 agent notes "
-                 "written between tool calls, 💬 user interjections, ✅ final answer). Tool "
-                 "calls, tool results and thinking are omitted.")
+    level = parsed.get("detail_level") or "Full"
+    legends = {
+        "Full": "**USER MESSAGE** → **SUBAGENT** blocks (summary + full report) → **MAIN AGENT** "
+                "section (🔹 agent notes written between tool calls, 💬 user interjections, ✅ final answer)",
+        "Without subagent full reports": "**USER MESSAGE** → **SUBAGENT** blocks (summary only, full "
+                "reports omitted) → **MAIN AGENT** section (🔹 agent notes, 💬 user interjections, ✅ final answer)",
+        "Final answers only": "**USER MESSAGE** → **SUBAGENT** blocks (summary only) → **MAIN AGENT** "
+                "✅ final answer (agent notes omitted)",
+        "Minimal": "**USER MESSAGE** → **MAIN AGENT** ✅ final answer (agent notes and subagents omitted)",
+    }
+    lines.append(f"> Condensed transcript — detail level **{level}**. Structure per turn: "
+                 f"{legends.get(level, legends['Full'])}. Tool calls, tool results and thinking "
+                 "are always omitted.")
     if parsed.get("source"):
         lines.append(f"> Source: {parsed['source']}.")
     if parsed.get("head_cut"):
@@ -1135,13 +1161,22 @@ def render_markdown(parsed, max_chars=0):
         for s in group["subagents"]:
             lines.append(f"### 🧭 SUBAGENT «{s['name']}» — result as received by the main agent")
             lines.append("")
-            lines.append(truncate(s["summary"], max_chars) if s["summary"]
-                         else "*(background agent finished; full report below)*")
+            if s["summary"]:
+                lines.append(truncate(s["summary"], max_chars))
+            elif s.get("report"):
+                lines.append("*(the main agent received the full report directly; it follows below)*")
+            elif s.get("report_omitted"):
+                lines.append("*(subagent finished; its full report is omitted at this detail level)*")
+            else:
+                lines.append("*(subagent finished; no report text available)*")
             if s.get("report"):
                 lines.append("")
                 lines.append(f"**Here is the full report from subagent «{s['name']}»:**")
                 lines.append("")
                 lines.append(truncate(s["report"], max_chars))
+            elif s.get("report_omitted") and s["summary"]:
+                lines.append("")
+                lines.append("*(full report omitted at this detail level)*")
             lines.append("")
             lines.append("*(end of subagent «%s»)*" % s["name"])
             lines.append("")
@@ -1263,10 +1298,15 @@ def cmd_extract(args):
                 parsed["title"] = titles[parsed["session_id"]]
         if args.no_subagents:
             parsed["turns"] = [t for t in parsed["turns"] if t["role"] != "subagent"]
-        elif args.no_subagent_reports:
+        elif args.no_subagent_reports or args.final_only:
             for t in parsed["turns"]:
-                if t["role"] == "subagent":
+                if t["role"] == "subagent" and t.get("report"):
                     t["report"] = None
+                    t["report_omitted"] = True
+        parsed["detail_level"] = ("Minimal" if args.no_subagents and args.final_only
+                                  else "Final answers only" if args.final_only
+                                  else "Without subagent full reports" if args.no_subagent_reports
+                                  else "Full")
         if args.last:
             user_idx = [i for i, t in enumerate(parsed["turns"]) if t["role"] == "user"]
             if len(user_idx) > args.last:
