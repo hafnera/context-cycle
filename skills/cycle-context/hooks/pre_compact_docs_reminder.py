@@ -73,8 +73,8 @@ def effective_window(measured_tokens=None):
     if isinstance(settings.get("autoCompactWindow"), int):
         return settings["autoCompactWindow"], "autoCompactWindow"
     model = settings.get("model") or ""
-    window, basis = (1_000_000, "model context window") if "[1m]" in model \
-        else (200_000, "model context window")
+    is_1m = "[1m]" in model or re.search(r"-5(-\d+)?(\[|$)", model) is not None  # Claude 5 family: 1M
+    window, basis = (1_000_000, "model context window") if is_1m else (200_000, "model context window")
     if measured_tokens and measured_tokens > window:
         window, basis = 1_000_000, "1M window inferred (usage exceeds 200k)"
     return window, basis

@@ -1213,7 +1213,7 @@ def current_model_and_window():
         model = settings.get("model")
     except (OSError, json.JSONDecodeError):
         pass
-    window = 1_000_000 if model and "[1m]" in model else 200_000
+    window = 1_000_000 if model and ("[1m]" in model or re.search(r"-5(-\d+)?(\[|$)", model)) else 200_000
     return model or "unknown, assuming 200k window", window
 
 

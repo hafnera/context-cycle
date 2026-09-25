@@ -106,7 +106,7 @@ Options: `--agent claude|desktop|remote|codex|all`, `--project PATH`, `--all-pro
 | `RESTORE_MODE` | `on_compact.py` | `"ask"` | `"ask"` injects the detail-level instruction; `"full"` injects the whole transcript unasked (chunked) |
 | `autoCompactWindow` | `~/.claude/settings.json` | unset | basis for auto-compact and the checkpoint threshold when set |
 
-The checkpoint threshold is measured from the latest main-context usage block in the session file (subagent usage ignored) against the raw window — `autoCompactWindow` if set, else the model window (1M for `[1m]` models, 200k otherwise; a larger measured usage infers 1M). Claude Code's own display measures against the auto-compact point, so it shows a higher percentage.
+The checkpoint threshold is measured from the latest main-context usage block in the session file (subagent usage ignored) against the raw window — `autoCompactWindow` if set, else the model window (1M for `[1m]` models and the Claude 5 family, 200k otherwise; a larger measured usage infers 1M). Claude Code's own display measures against the auto-compact point, so it shows a higher percentage.
 
 ## Tests
 
