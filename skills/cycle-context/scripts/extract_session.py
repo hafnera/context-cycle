@@ -412,6 +412,7 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
                 del turns[k]
 
     last_mid = None
+    agent_busy = False  # True while the main agent is mid-turn (last message ended in a tool call)
     for entry in entries:
         etype = entry.get("type")
         ts = parse_ts(entry.get("timestamp"))
@@ -428,8 +429,23 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
             continue
         if entry.get("isSidechain") or entry.get("isSynthetic") or entry.get("parent_tool_use_id"):
             continue  # subagent traffic (handled via the registry) / synthetic events
+        if etype == "attachment":
+            att = entry.get("attachment") or {}
+            if att.get("type") == "queued_command":
+                # CLI/Desktop: a message the user typed while the agent was working
+                prompt = att.get("prompt")
+                if isinstance(prompt, list):
+                    prompt = "\n".join(b.get("text", "") for b in prompt
+                                       if isinstance(b, dict) and b.get("type") == "text")
+                text = strip_reminders(str(prompt or "")).strip()
+                text = re.sub(r"^The user sent a new message while you were working:\s*", "", text)
+                if text and not text.startswith("<") and not is_noise(text, CLAUDE_USER_NOISE_PREFIXES):
+                    turns.append({"role": "user_interjection" if agent_busy or not seen_real_user
+                                  else "user", "text": text, "ts": ts})
+            continue
         if etype == "result":
             close_turn()
+            agent_busy = False
             continue
         if etype == "user":
             content = (entry.get("message") or {}).get("content")
@@ -477,6 +493,7 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
                 continue
             if stripped.startswith("[Request interrupted by user"):
                 close_turn()
+                agent_busy = False
                 turns.append({"role": "event", "text": "[user interrupted]", "ts": ts})
                 continue
             if stripped.startswith("<task-notification>"):
@@ -493,6 +510,11 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
                 continue
             if has_image:
                 text = (text + "\n" if text else "") + "*[image attached]*"
+            if agent_busy and seen_real_user:
+                # the user wrote while the agent was still working: an
+                # interjection inside the running turn, not a new turn
+                turns.append({"role": "user_interjection", "text": text, "ts": ts})
+                continue
             close_turn()
             turns.append({"role": "user", "text": text, "ts": ts})
             seen_real_user = True
@@ -501,7 +523,11 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
                 continue
             message = entry.get("message") or {}
             mid = message.get("id") or entry.get("messageId") or entry.get("requestId")
-            for b in blocks_of(entry):
+            blocks = blocks_of(entry)
+            # a message that ends without a tool call ends the agent's turn
+            agent_busy = any(b.get("type") == "tool_use" for b in blocks) \
+                or message.get("stop_reason") == "tool_use"
+            for b in blocks:
                 if b.get("type") != "text":
                     continue
                 text = (b.get("text") or "").strip()
@@ -1043,7 +1069,19 @@ def cmd_list(args):
                   f"{fmt_tokens(r['est_tokens']):>10}  {snippet(r['title'] or '', 70)}{flag}")
 
 
+HEADING_RE = re.compile(r"^(#{1,6})(\s)", re.MULTILINE)
+
+
+def embed(text):
+    """Embedded content (user texts, agent notes, subagent reports) must not
+    compete with the transcript's own structure headings: demote its markdown
+    headings below level 4 and neutralize horizontal rules."""
+    text = HEADING_RE.sub(lambda m: "#" * min(6, len(m.group(1)) + 4) + m.group(2), text)
+    return re.sub(r"^\s*(-{3,}|\*{3,}|_{3,})\s*$", "· · ·", text, flags=re.MULTILINE)
+
+
 def truncate(text, max_chars):
+    text = embed(text)
     if max_chars and len(text) > max_chars:
         omitted = len(text) - max_chars
         return text[:max_chars].rstrip() + f"\n\n*[… truncated, {omitted:,} more chars]*"
@@ -1062,8 +1100,9 @@ def render_markdown(parsed, max_chars=0):
     lines.append(f"- **Time:** {fmt_ts(parsed['first_ts'])} → {fmt_ts(parsed['last_ts'])}")
     lines.append(f"- **User messages:** {parsed['user_messages']}")
     lines.append("")
-    lines.append("> Condensed transcript: user messages, the main agent's progress notes and "
-                 "final answer per turn, and subagent results (summary + full report). Tool "
+    lines.append("> Condensed transcript. Structure per turn: **USER MESSAGE** → **SUBAGENT** "
+                 "results (summary + full report) → **MAIN AGENT** section (🔹 agent notes "
+                 "written between tool calls, 💬 user interjections, ✅ final answer). Tool "
                  "calls, tool results and thinking are omitted.")
     if parsed.get("source"):
         lines.append(f"> Source: {parsed['source']}.")
@@ -1074,42 +1113,79 @@ def render_markdown(parsed, max_chars=0):
         lines.append(f"> ⚠ The first {parsed['omitted_users']} user messages were "
                      "omitted (--last); rerun without --last for the full history.")
     lines.append("")
-    for turn in parsed["turns"]:
-        if turn["role"] == "command":
-            lines.append(f"*⌘ User ran:* `{turn['text']}`")
-            lines.append("")
-            continue
-        if turn["role"] == "event":
-            lines.append(f"*⚙ {turn['text']}*")
-            lines.append("")
-            continue
-        if turn["role"] == "assistant_progress":
-            lines.append(truncate(turn["text"], max_chars))  # main agent's note between tool calls
-            lines.append("")
-            continue
-        if turn["role"] == "subagent":
+    def note(turn):
+        when = f" ({fmt_ts(turn['ts'], with_date=False)})" if turn.get("ts") else ""
+        return f"🔹 **Agent note{when}:** " + truncate(turn["text"], max_chars)
+
+    def render_group(group):
+        user = group.get("user")
+        if user:
             lines.append("---")
-            lines.append(f"### 🧭 Subagent «{turn['name']}» — result as received by the main agent")
+            lines.append(f"## 👤 USER MESSAGE — {fmt_ts(user['ts'])}" if user["ts"] else "## 👤 USER MESSAGE")
             lines.append("")
-            lines.append(truncate(turn["summary"], max_chars) if turn["summary"] else "*(background agent finished; see full report below)*")
-            if turn.get("report"):
-                lines.append("")
-                lines.append(f"**Here is the full report from subagent «{turn['name']}»:**")
-                lines.append("")
-                lines.append(truncate(turn["report"], max_chars))
+            lines.append(truncate(user["text"], max_chars))
             lines.append("")
+        elif group["agent"] or group["subagents"]:
+            lines.append("---")
+            lines.append("## 🤖 MAIN AGENT — continuation (no user message precedes this part)")
+            lines.append("")
+        for s in group["subagents"]:
+            lines.append(f"### 🧭 SUBAGENT «{s['name']}» — result as received by the main agent")
+            lines.append("")
+            lines.append(truncate(s["summary"], max_chars) if s["summary"]
+                         else "*(background agent finished; full report below)*")
+            if s.get("report"):
+                lines.append("")
+                lines.append(f"**Here is the full report from subagent «{s['name']}»:**")
+                lines.append("")
+                lines.append(truncate(s["report"], max_chars))
+            lines.append("")
+            lines.append("*(end of subagent «%s»)*" % s["name"])
+            lines.append("")
+        if group["agent"]:
+            if user:
+                lines.append("### 🤖 MAIN AGENT — response to the user message above")
+                lines.append("")
+            finals = [i for i, a in enumerate(group["agent"]) if a["role"] == "assistant"]
+            for i, item in enumerate(group["agent"]):
+                if item["role"] == "assistant" and finals and i != finals[-1]:
+                    lines.append("#### ✅ MAIN AGENT — ANSWER (turn ended here; the agent continued "
+                                 "afterwards, e.g. when subagent reports arrived)")
+                    lines.append("")
+                    lines.append(truncate(item["text"], max_chars)); lines.append("")
+                    continue
+                if item["role"] == "assistant_progress":
+                    lines.append(note(item)); lines.append("")
+                elif item["role"] == "user_interjection":
+                    when = f" ({fmt_ts(item['ts'], with_date=False)})" if item.get("ts") else ""
+                    lines.append(f"💬 **USER INTERJECTION{when} (written while the agent was working):** "
+                                 + truncate(item["text"], max_chars)); lines.append("")
+                elif item["role"] == "assistant":
+                    lines.append("#### ✅ MAIN AGENT — FINAL ANSWER")
+                    lines.append("")
+                    lines.append(truncate(item["text"], max_chars)); lines.append("")
+
+    group = {"user": None, "subagents": [], "agent": []}
+    for turn in parsed["turns"]:
+        role = turn["role"]
+        if role in ("command", "event", "summary"):
+            render_group(group); group = {"user": None, "subagents": [], "agent": []}
+            if role == "command":
+                lines.append(f"*⌘ User ran:* `{turn['text']}`"); lines.append("")
+            elif role == "event":
+                lines.append(f"*⚙ {turn['text']}*"); lines.append("")
+            else:
+                lines.append("---"); lines.append("### 📋 Carried-over summary of an earlier conversation")
+                lines.append(""); lines.append(truncate(turn["text"], max_chars)); lines.append("")
             continue
-        lines.append("---")
-        if turn["role"] == "user":
-            when = f" — {fmt_ts(turn['ts'])}" if turn["ts"] else ""
-            lines.append(f"### 👤 User{when}")
-        elif turn["role"] == "summary":
-            lines.append("### 📋 Carried-over summary of an earlier conversation")
+        if role == "user":
+            render_group(group); group = {"user": turn, "subagents": [], "agent": []}
+            continue
+        if role == "subagent":
+            group["subagents"].append(turn)
         else:
-            lines.append("### 🤖 Assistant (final answer)")
-        lines.append("")
-        lines.append(truncate(turn["text"], max_chars))
-        lines.append("")
+            group["agent"].append(turn)
+    render_group(group)
     return "\n".join(lines)
 
 
@@ -1182,6 +1258,12 @@ def cmd_extract(args):
             titles = codex_index_titles()
             if parsed["session_id"] in titles:
                 parsed["title"] = titles[parsed["session_id"]]
+        if args.no_subagents:
+            parsed["turns"] = [t for t in parsed["turns"] if t["role"] != "subagent"]
+        elif args.no_subagent_reports:
+            for t in parsed["turns"]:
+                if t["role"] == "subagent":
+                    t["report"] = None
         if args.last:
             user_idx = [i for i, t in enumerate(parsed["turns"]) if t["role"] == "user"]
             if len(user_idx) > args.last:
@@ -1233,6 +1315,10 @@ def main():
     p_ext.add_argument("--current", action="store_true",
                        help="extract the currently running session of this project "
                             "(most recently written session file)")
+    p_ext.add_argument("--no-subagent-reports", action="store_true",
+                       help="keep subagent summaries but drop their full reports")
+    p_ext.add_argument("--no-subagents", action="store_true",
+                       help="drop subagent blocks entirely")
     p_ext.add_argument("--final-only", action="store_true",
                        help="only each turn's final answer (default: also the main agent's "
                             "progress notes between tool calls)")

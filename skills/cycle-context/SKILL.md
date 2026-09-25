@@ -43,7 +43,20 @@ Interpreting the list:
 - A row marked `*ACTIVE*` is almost certainly **this currently running session** (or another session running in parallel).
 - Match the user's description (topic, date, project). If exactly one session fits, proceed without asking. If several plausibly fit, show the user the shortlist (title, date, token estimate) and ask which one.
 
-### 2. Extract and ingest
+### 2. Ask for the detail level (AskUserQuestion)
+
+Before extracting — for a normal import **and** for the current-session re-orientation — ask the user with **AskUserQuestion** which parts of the context to import. One question, single select, first option recommended:
+
+| Option (label) | Meaning | Extract flags |
+|---|---|---|
+| **Full (Recommended)** | user messages, agent notes, final answers, subagent summaries **and** full reports | *(none)* |
+| Without subagent full reports | as Full, but subagent blocks keep only the summary the main agent received | `--no-subagent-reports` |
+| Final answers only | user messages + final answers; no agent notes, subagent summaries kept | `--final-only` |
+| Minimal | final answers only, no subagent blocks at all | `--final-only --no-subagents` |
+
+Describe each option with the token estimate when you have it (the list shows `~tokens` for the Full extract). Never pick a reduced level on your own: if the question cannot be asked (non-interactive session), import **Full** and say so.
+
+### 3. Extract and ingest
 
 **Full-extract rule: the default is ALWAYS the complete extract — never apply `--last` or `--max-chars` on your own judgment.** Those options exist solely for when the user has explicitly asked for a limited import. If a full extract seems too large to ingest, do not silently limit it: tell the user the size (from `-o` output or the list's token estimate) and ask how to proceed. If a limit was used (on the user's instruction), state that clearly in your confirmation so it never happens unnoticed.
 
@@ -63,7 +76,7 @@ Extract options:
 
 - `--last N` — keep only the last N user messages + their answers (**only when the user asked for it**)
 - `--max-chars N` — truncate each message to N chars (**only when the user asked for it**)
-- `--final-only` — only each turn's final answer, without the progress notes (**only when the user asked for it**; the default keeps them)
+- `--final-only` / `--no-subagent-reports` / `--no-subagents` — the detail levels from step 2 (**only as chosen by the user**)
 - `--current` — the currently running session of this project (see below)
 - `--path FILE` — extract a specific `.jsonl` directly (bypasses discovery)
 - `--json` — structured output instead of markdown
@@ -71,7 +84,9 @@ Extract options:
 
 ### Special case: re-orient in the CURRENT session
 
-When the user asks you to use this skill **on the current session itself** ("damit du wieder weißt, worum es in dieser Session geht") — typically after your context was auto-compacted — skip the list step and run:
+(Ask the detail-level question from step 2 first — this is exactly the moment where full subagent reports may or may not be wanted.)
+
+When the user asks you to use this skill **on the current session itself** ("damit du wieder weißt, worum es in dieser Session geht") — typically after your context was auto-compacted — skip the list step, ask the detail-level question, and run (adding the chosen flags):
 
 ```bash
 python3 "<skill>/scripts/extract_session.py" extract --current
@@ -79,7 +94,7 @@ python3 "<skill>/scripts/extract_session.py" extract --current
 
 This resolves to the most recently written session file of the current project, which is the running session (its jsonl retains the full history even after compaction). Read the output, then give the user a short recap of the session so far: original goal, key decisions, current state, open points. If two sessions of this project run in parallel, verify the extract matches this conversation and fall back to an explicit id if not. The full-extract rule applies here too: no `--last`/`--max-chars` unless the user asked.
 
-### 3. Confirm
+### 4. Confirm
 
 After ingesting, tell the user in 2–4 sentences what context was imported (session title, time range, number of turns, main topics) so they can verify it's the right one — and explicitly whether it was the **full** extract (default) or limited on their instruction.
 

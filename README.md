@@ -56,7 +56,7 @@ Just phrase it naturally in any session:
 
 Claude lists matching sessions **grouped by repo/project** (with last-activity date and the estimated token size of the condensed transcript), picks the right one (or asks), imports it, and confirms what was imported — always including the import size: `Imported context: ~X.Xk tokens ≈ Y% of the …-token context window`.
 
-**Full-extract rule:** by default the agent always imports the complete condensed transcript. The limiting options (`--last N`, `--max-chars N`) are only ever used on your explicit instruction, and any limited import is called out explicitly.
+**Detail level is your choice:** before importing, the agent asks you via a question card which parts to include — Full (recommended: user messages, agent notes, final answers, subagent summaries + full reports), without subagent full reports, final answers only, or minimal. The agent never reduces on its own; `--last N`/`--max-chars N` are likewise only used on your explicit instruction. The automatic post-compact restore always injects the Full level.
 
 ## Using the extractor as a CLI
 
@@ -74,10 +74,11 @@ python3 skills/cycle-context/scripts/extract_session.py extract f4c4d603 --all-p
 python3 skills/cycle-context/scripts/extract_session.py extract --current
 ```
 
-Key options: `--agent claude|desktop|remote|codex|all`, `--project PATH`, `--all-projects`, `--grep TEXT`, `--current`, `--last N`, `--max-chars N`, `--final-only` (drop the progress notes, keep only final answers), `--json`, `--path FILE`, `-o FILE`.
+Key options: `--agent claude|desktop|remote|codex|all`, `--project PATH`, `--all-projects`, `--grep TEXT`, `--current`, `--last N`, `--max-chars N`, `--final-only` / `--no-subagent-reports` / `--no-subagents` (detail levels; the skill asks the user which one via a question card), `--json`, `--path FILE`, `-o FILE`.
 
 ## What the parser keeps and drops
 
+- **Structure per turn:** `USER MESSAGE` → `SUBAGENT` blocks → `MAIN AGENT` section (🔹 agent notes between tool calls, 💬 user interjections written while the agent worked, ✅ final answer); a second answer without a new user message is marked as a continuation.
 - **Kept:** real user messages; the main agent's progress notes and the final answer of each turn; subagent blocks (`🧭 Subagent «name»`) with the result as received by the main agent and, when it is more than that summary, the subagent's full report — read from its `SubagentHandback` message, its own transcript (`<session>/subagents/agent-*.jsonl` for CLI/Desktop, `parent_tool_use_id` entries in cloud streams) or a locally persisted `tool-results/*.txt` file; carried-over compact summaries; image markers (`[image attached]`).
 - **Kept as one-line markers:** slash commands (`⌘ User ran: /model …`), stop-hook follow-ups, background-task completions and interruptions (`⚙ …`) — they remain as turn boundaries so the *correct* final answer is selected per turn.
 - **Duplicates are removed:** resumed sessions re-append history into the same file; exact `uuid` duplicates are dropped so nothing appears twice.
