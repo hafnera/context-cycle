@@ -45,16 +45,14 @@ Interpreting the list:
 
 ### 2. Ask for the detail level (AskUserQuestion)
 
-Before extracting — for a normal import **and** for the current-session re-orientation — ask the user with **AskUserQuestion** which parts of the context to import. One question, single select, first option recommended:
+Before **every** extract — a normal import, the current-session re-orientation, and the restore after a compaction — ask the user with **AskUserQuestion** (single select) which parts of the context to import. Use exactly these labels and descriptions (add the token estimate to each description when you have one — the post-compact instruction and `list` provide estimates):
 
-| Option (label) | Meaning | Extract flags |
-|---|---|---|
-| **Full (Recommended)** | user messages, agent notes, final answers, subagent summaries **and** full reports | *(none)* |
-| Without subagent full reports | as Full, but subagent blocks keep only the summary the main agent received | `--no-subagent-reports` |
-| Final answers only | user messages + final answers; no agent notes, subagent summaries kept | `--final-only` |
-| Minimal | final answers only, no subagent blocks at all | `--final-only --no-subagents` |
+1. **Full (Recommended)** — description: *"Everything: your messages, the agent's notes between tool calls, final answers, and every subagent's summary AND full report. Most complete context."* → flags: *(none)*
+2. **Without subagent full reports** — description: *"Like Full, but subagent blocks keep only the short summary the main agent received; the long full reports are left out."* → `--no-subagent-reports`
+3. **Final answers only** — description: *"Your messages and the agent's final answer per turn, plus subagent summaries. The agent's intermediate notes between tool calls are left out."* → `--final-only`
+4. **Minimal** — description: *"Only your messages and the agent's final answers. No agent notes, no subagent blocks at all. Smallest context."* → `--final-only --no-subagents`
 
-Describe each option with the token estimate when you have it (the list shows `~tokens` for the Full extract). Never pick a reduced level on your own: if the question cannot be asked (non-interactive session), import **Full** and say so.
+Never pick a reduced level on your own. If the question cannot be asked (non-interactive session), import **Full** and say so explicitly.
 
 ### 3. Extract and ingest
 
@@ -84,7 +82,7 @@ Extract options:
 
 ### Special case: re-orient in the CURRENT session
 
-(Ask the detail-level question from step 2 first — this is exactly the moment where full subagent reports may or may not be wanted.)
+(Ask the detail-level question from step 2 first — this is exactly the moment where full subagent reports may or may not be wanted.) After a compaction, the plugin's hook injects a short instruction with the token estimates of all four levels: ask the question with those numbers, then run the extract with the chosen flags, write it with `-o`, and Read the file **completely** (multiple Read calls for big files) — nothing may be skipped.
 
 When the user asks you to use this skill **on the current session itself** ("damit du wieder weißt, worum es in dieser Session geht") — typically after your context was auto-compacted — skip the list step, ask the detail-level question, and run (adding the chosen flags):
 

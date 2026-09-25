@@ -28,9 +28,20 @@ import sys
 import time
 from pathlib import Path
 
-# Optional bounds for the injected context. Both None: the FULL condensed
-# transcript is injected. Set e.g. "15" / "2000" if that turns out to be
-# too much context after compaction.
+# RESTORE_MODE:
+#   "ask"  (default) — inject a short instruction with token estimates of the
+#            four detail levels; the agent then asks the user (question card)
+#            which level to import and runs the extract itself.
+#   "full" — inject the complete condensed transcript directly (chunked),
+#            without asking.
+RESTORE_MODE = "ask"
+DETAIL_LEVELS = [
+    ("Full", []),
+    ("Without subagent full reports", ["--no-subagent-reports"]),
+    ("Final answers only", ["--final-only"]),
+    ("Minimal", ["--final-only", "--no-subagents"]),
+]
+# Optional bounds for the "full" mode injection. Both None: everything.
 LAST_USER_TURNS = None
 MAX_CHARS_PER_MESSAGE = None
 
@@ -39,6 +50,32 @@ MAX_CHARS_PER_MESSAGE = None
 CHUNK_CHARS = 9_000
 # Stagger printing so parts tend to arrive in order (they run in parallel).
 STAGGER_SECONDS = 0.15
+
+
+def build_ask_text(hook_input):
+    """Instruction + per-level token estimates (ask mode)."""
+    script = Path(__file__).resolve().parent.parent / "scripts" / "extract_session.py"
+    transcript_path = hook_input.get("transcript_path")
+    target = ["--path", transcript_path] if transcript_path and Path(transcript_path).is_file() \
+        else ["--current", "--project", hook_input.get("cwd") or str(Path.cwd())]
+    rows = []
+    for label, flags in DETAIL_LEVELS:
+        r = subprocess.run([sys.executable or "python3", str(script), "extract", *target, *flags],
+                           capture_output=True, text=True, timeout=120)
+        chars = len(r.stdout) if r.returncode == 0 else 0
+        rows.append(f"- {label}: ~{chars // 4 / 1000:.1f}k tokens"
+                    + (f"  (flags: {' '.join(flags)})" if flags else "  (no flags)"))
+    return ("The context was just compacted. The full history of this session is still "
+            "on disk and can be restored with the cycle-context skill. BEFORE doing anything "
+            "else, ask the user with AskUserQuestion which detail level to import (labels and "
+            "descriptions exactly as in the cycle-context skill; recommend Full), showing "
+            "these estimates:\n" + "\n".join(rows) + "\n"
+            "Then run  python3 \"" + str(script) + "\" extract " + " ".join(
+                f'"{a}"' if " " in a else a for a in target)
+            + " <chosen flags> -o <file>  and Read that file COMPLETELY (multiple Read calls "
+            "if it is long — never skip or sample). Afterwards re-read ALL project "
+            "documentation (README, CLAUDE.md, docs/, skill files, knowledge-base notes) "
+            "and tell the user how much context was imported.")
 
 
 def build_full_text(hook_input):
@@ -118,6 +155,11 @@ def main():
         hook_input = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
         hook_input = {}
+
+    if RESTORE_MODE == "ask":
+        if part in (None, 1):  # only the first slot speaks in ask mode
+            print(build_ask_text(hook_input))
+        return
 
     full = build_full_text(hook_input)
     if full is None:
