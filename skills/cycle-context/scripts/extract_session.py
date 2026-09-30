@@ -1424,13 +1424,13 @@ def parse_chat_record(rec, all_text=True):
             if text:
                 turns.append({"role": "user", "text": text, "ts": ts})
             continue
-        segments, cur = [], []
+        segments, cur, has_text = [], [], False
         for b in blocks:
             if b.get("type") == "text" and (b.get("text") or "").strip():
-                cur.append(b["text"].strip())
+                cur.append(b["text"].strip()); has_text = True
             elif b.get("type") == "tool_use":
-                if cur:
-                    segments.append("\n\n".join(cur)); cur = []
+                if has_text:  # a tool call ends a text segment; deliverables wait for the next text
+                    segments.append("\n\n".join(cur)); cur, has_text = [], False
                 deliverable = chat_tool_deliverable(b)
                 if deliverable:
                     cur.append(deliverable)  # joins the text that follows it
