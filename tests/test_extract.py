@@ -641,7 +641,12 @@ class ChatTests(unittest.TestCase):
             A("a2", "h2", 3, [{"type": "text", "text": "Alte Antwort (abandoned branch)"}]),
             A("a3", "h2", 4, [{"type": "text", "text": "Die Nachteile sind ..."},
                               {"type": "tool_use", "id": "t2", "name": "artifacts",
-                               "input": {"command": "create", "title": "Vergleich"}},
+                               "input": {"command": "create", "title": "Vergleich", "content": "# Vergleich\nGewerbe vs. frei"}},
+                              {"type": "tool_use", "id": "t3", "name": "message_compose_v1",
+                               "input": {"kind": "email", "variants": [{"label": "kooperativ", "subject": "Rahmenvertrag",
+                                                                         "body": "Hallo Herr K,\n\nvielen Dank."}]}},
+                              {"type": "tool_use", "id": "t4", "name": "Gmail:send_message",
+                               "input": {"to": "k@example.com", "subject": "Rahmenvertrag", "body": "Gesendeter Text."}},
                               {"type": "text", "text": "Ich habe dir eine Uebersicht erstellt."}]),
         ]
         return {"conversationUuid": cid, "product": "chat", "fetchedAt": 1700000000000,
@@ -660,7 +665,13 @@ class ChatTests(unittest.TestCase):
         for noise in ("abandoned branch", "secret reasoning", "RESULT-NOISE", "web_search"):
             self.assertNotIn(noise, md)
         self.assertIn("*[file attached: vertrag.pdf]*", md)
-        self.assertIn("artifact create: «Vergleich»", md)
+        self.assertIn("📄 **Artifact «Vergleich»** (create)", md)
+        self.assertIn("##### Vergleich", md)                  # artifact content, headings demoted
+        self.assertIn("✉ **Draft email — variant «kooperativ»**\nSubject: Rahmenvertrag\n\nHallo Herr K,", md)
+        self.assertIn("✉ **Sent email via Gmail**\nTo: k@example.com\nSubject: Rahmenvertrag\n\nGesendeter Text.", md)
+        final_md = ex.render_markdown(ex.parse_chat_record(self.chat_record(), all_text=False))
+        self.assertIn("Hallo Herr K,", final_md)              # deliverables survive every detail level
+        self.assertNotIn("Die Nachteile sind", final_md)
         self.assertEqual(parsed["title"], "Freiberufler-Frage")
         self.assertEqual(parsed["user_messages"], 2)
         self.assertIn("1 messages on edited/regenerated branches omitted", parsed["source"])

@@ -1348,11 +1348,52 @@ def desktop_chats():
     return [(r, CacheRef(r, "chat")) for r in _newest_per_conversation(recs)]
 
 
+def chat_tool_deliverable(block):
+    """Tool calls in chats whose INPUT is content the user received — a
+    composed message (message_compose_v1 variants), a sent mail or draft
+    (Gmail & co.), a created artifact — rendered as part of the answer.
+    Other tool calls are dropped like tool traffic."""
+    name = str(block.get("name") or "")
+    inp = block.get("input") if isinstance(block.get("input"), dict) else {}
+    if not inp:
+        return None
+    if name == "message_compose_v1":
+        parts = []
+        for v in inp.get("variants") or []:
+            if not isinstance(v, dict) or not (v.get("body") or v.get("subject")):
+                continue
+            head = f"✉ **Draft {inp.get('kind') or 'message'}"
+            head += f" — variant «{v['label']}»**" if v.get("label") else "**"
+            for key in ("to", "subject"):
+                if v.get(key):
+                    head += f"\n{key.capitalize()}: {v[key]}"
+            parts.append(head + "\n\n" + embed(str(v.get("body") or "")).strip())
+        return "\n\n".join(parts) or None
+    low = name.lower()
+    if (any(k in low for k in ("send_message", "send_email", "create_draft", "update_draft"))
+            or low.endswith((":reply", ":forward"))) and (inp.get("body") or inp.get("subject")):
+        action = "Sent" if "send" in low else "Draft"
+        head = f"✉ **{action} email via {name.split(':')[0]}**"
+        for key in ("to", "cc", "subject"):
+            if inp.get(key):
+                head += f"\n{key.capitalize()}: {inp[key]}"
+        return head + "\n\n" + embed(str(inp.get("body") or "")).strip()
+    if name == "artifacts":
+        cmd = inp.get("command") or "create"
+        title = inp.get("title") or inp.get("id") or "?"
+        if cmd in ("create", "rewrite") and inp.get("content"):
+            return f"📄 **Artifact «{title}»** ({cmd})\n\n" + embed(str(inp["content"])).strip()
+        return f"*[artifact {cmd}: «{title}»]*"
+    return None
+
+
 def parse_chat_record(rec, all_text=True):
     """Condense a claude.ai chat (Desktop cache record) into turns: the user's
     messages and, per assistant message, its text — text written before a
     tool call as agent notes, the text after the last one as the answer.
-    Thinking, tool calls and tool results are dropped. Only the displayed
+    Composed or sent messages and created artifacts (tool inputs) stay as
+    part of the answer. Thinking, other tool calls and tool results are
+    dropped. Only the displayed
     branch (ancestors of the current leaf) is used; edited/regenerated
     branches are counted and omitted."""
     tree = rec.get("tree") or {}
@@ -1390,9 +1431,9 @@ def parse_chat_record(rec, all_text=True):
             elif b.get("type") == "tool_use":
                 if cur:
                     segments.append("\n\n".join(cur)); cur = []
-                inp = b.get("input") if isinstance(b.get("input"), dict) else {}
-                if b.get("name") == "artifacts" and inp.get("title"):
-                    cur.append(f"*[artifact {inp.get('command') or 'created'}: «{inp['title']}»]*")
+                deliverable = chat_tool_deliverable(b)
+                if deliverable:
+                    cur.append(deliverable)  # joins the text that follows it
         if cur:
             segments.append("\n\n".join(cur))
         if not segments:
