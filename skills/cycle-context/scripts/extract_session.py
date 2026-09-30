@@ -12,6 +12,8 @@ Supported agents:
     (V8-serialized, Snappy-compressed), parsed via v8idb.py
   - Cloud sessions continued locally: the local replay is replaced by the
     original cloud session's complete history (incl. subagent reports)
+  - Ordinary claude.ai CHATS (macOS): Claude Desktop's IndexedDB cache
+    (blob files + inline LevelDB values, read via leveldb.py + v8idb.py)
 
 The condensed transcript keeps only real user messages and the FINAL
 assistant answer of each turn. Tool calls, tool results, intermediate
@@ -49,6 +51,7 @@ DESKTOP_IDB_BLOB_DIR = (Path.home() / "Library" / "Application Support" / "Claud
                         / "IndexedDB" / "https_claude.ai_0.indexeddb.blob")
 
 # A session file modified this recently is probably the one currently running.
+DESKTOP_IDB_LEVELDB_DIR = DESKTOP_IDB_BLOB_DIR.parent / "https_claude.ai_0.indexeddb.leveldb"
 ACTIVE_WINDOW_SECONDS = 180
 
 CLAUDE_USER_NOISE_PREFIXES = (
@@ -1246,6 +1249,83 @@ def parse_cloud_session(cse_id, all_text=True):
     return parsed
 
 
+_idb_cache = {"records": None}
+
+
+def desktop_idb_records():
+    """Every decoded record of Claude Desktop's IndexedDB cache for claude.ai:
+    the external blob files (large values) plus the values stored inline in
+    the LevelDB (small ones; each prefixed with a version varint). Records are
+    dicts like {conversationUuid, product: "chat"|"code"|…, tree: {...}}."""
+    if _idb_cache["records"] is not None:
+        return _idb_cache["records"]
+    out = []
+    try:
+        from v8idb import load_idb_blob
+    except ImportError:
+        _idb_cache["records"] = out
+        return out
+    if DESKTOP_IDB_BLOB_DIR.is_dir():
+        for blob in DESKTOP_IDB_BLOB_DIR.rglob("*"):
+            if not blob.is_file() or blob.stat().st_size < 200:
+                continue
+            try:
+                head = blob.open("rb").read(64)
+                if b"conversationUuid" not in head and head[:3] != b"\xff\x11\x02":
+                    continue
+                rec = load_idb_blob(blob.read_bytes())
+            except Exception:
+                continue
+            if isinstance(rec, dict):
+                out.append(rec)
+    if DESKTOP_IDB_LEVELDB_DIR.is_dir():
+        try:
+            from leveldb import latest_values
+            for value in latest_values(DESKTOP_IDB_LEVELDB_DIR).values():
+                i = value.find(b"\xff", 0, 12) if value else -1
+                if i < 0:
+                    continue
+                try:
+                    rec = load_idb_blob(value[i:])
+                except Exception:
+                    continue
+                if isinstance(rec, dict) and isinstance(rec.get("tree"), dict):
+                    out.append(rec)
+        except Exception:
+            pass
+    _idb_cache["records"] = out
+    return out
+
+
+class CacheRef:
+    """Stands in for a Path for records of Claude Desktop's cache."""
+    def __init__(self, rec, kind):
+        self.rec = rec; self.kind = kind
+        self.id = str(rec.get("conversationUuid") or "")
+        if self.id.startswith("code:"):
+            self.id = self.id[len("code:"):]
+        self.stem = self.id
+        ts = rec.get("conversationUpdatedAt") or rec.get("writtenAt") or rec.get("fetchedAt") or 0
+        self.mtime = float(ts) / 1000 if float(ts) > 1e11 else float(ts)
+    def __str__(self):
+        return f"claude-desktop-cache:{self.kind}:{self.id}"
+    def __fspath__(self):
+        return str(self)
+
+
+def _newest_per_conversation(records):
+    found = {}
+    for rec in records:
+        cid = str(rec.get("conversationUuid") or "")
+        tree = rec.get("tree") or {}
+        n = len(tree.get("chat_messages") or tree.get("messages") or [])
+        score = (n, float(rec.get("writtenAt") or rec.get("fetchedAt") or 0))
+        if cid not in found or score > found[cid][1]:
+            found[cid] = (rec, score)
+    return sorted((r for r, _ in found.values()),
+                  key=lambda r: float(r.get("conversationUpdatedAt") or r.get("writtenAt") or 0), reverse=True)
+
+
 def remote_sessions():
     """Claude Desktop's local cache of REMOTE claude.ai/code sessions.
 
@@ -1253,34 +1333,87 @@ def remote_sessions():
     (often Snappy-compressed) IndexedDB value: {conversationUuid: "code:cse_…",
     tree: {kind: "code_session", sessionType, messages: [Claude Code events…],
     headCut}}. Only sessions opened in Desktop are cached, and a long session
-    may be cached tail-only (headCut). Returns [(record, blob_path)] newest first.
+    may be cached tail-only (headCut). Returns [(record, CacheRef)] newest first.
     """
-    if not DESKTOP_IDB_BLOB_DIR.is_dir():
-        return []
-    try:
-        from v8idb import load_idb_blob
-    except ImportError:
-        return []
-    found = {}
-    for blob in DESKTOP_IDB_BLOB_DIR.rglob("*"):
-        if not blob.is_file() or blob.stat().st_size < 200:
+    recs = [r for r in desktop_idb_records() if (r.get("tree") or {}).get("kind") == "code_session"]
+    return [(r, CacheRef(r, "remote")) for r in _newest_per_conversation(recs)]
+
+
+def desktop_chats():
+    """Claude Desktop's cache of ordinary claude.ai CHATS (product "chat"):
+    the conversation tree with all messages, as rendered in the app. Only
+    chats opened in Desktop are cached. Returns [(record, CacheRef)] newest first."""
+    recs = [r for r in desktop_idb_records()
+            if r.get("product") == "chat" and (r.get("tree") or {}).get("chat_messages")]
+    return [(r, CacheRef(r, "chat")) for r in _newest_per_conversation(recs)]
+
+
+def parse_chat_record(rec, all_text=True):
+    """Condense a claude.ai chat (Desktop cache record) into turns: the user's
+    messages and, per assistant message, its text — text written before a
+    tool call as agent notes, the text after the last one as the answer.
+    Thinking, tool calls and tool results are dropped. Only the displayed
+    branch (ancestors of the current leaf) is used; edited/regenerated
+    branches are counted and omitted."""
+    tree = rec.get("tree") or {}
+    msgs = [m for m in (tree.get("chat_messages") or []) if isinstance(m, dict)]
+    by = {m.get("uuid"): m for m in msgs}
+    parents = tree.get("parentByChildUuid") or {}
+    chain, seen = [], set()
+    u = tree.get("current_leaf_message_uuid")
+    while u in by and u not in seen:
+        seen.add(u); chain.append(by[u])
+        u = parents.get(u) or by[u].get("parent_message_uuid")
+    chain.reverse()
+    if not chain:
+        chain = sorted(msgs, key=lambda m: m.get("index", 0))
+    turns = []
+    for m in chain:
+        ts = parse_ts(m.get("created_at"))
+        blocks = [b for b in (m.get("content") or []) if isinstance(b, dict)]
+        if m.get("sender") == "human":
+            text = "\n\n".join((b.get("text") or "").strip() for b in blocks if b.get("type") == "text").strip()
+            if not text and m.get("text"):
+                text = str(m["text"]).strip()
+            extras = [f"*[file attached: {f.get('file_name') or f.get('name') or '?'}]*"
+                      for f in (m.get("files") or []) if isinstance(f, dict)]
+            extras += [f"*[attachment: {a.get('file_name') or a.get('name') or '?'}]*"
+                       for a in (m.get("attachments") or []) if isinstance(a, dict)]
+            text = "\n".join([text] + extras).strip() if extras else text
+            if text:
+                turns.append({"role": "user", "text": text, "ts": ts})
             continue
-        try:
-            head = blob.open("rb").read(64)
-            if b"conversationUuid" not in head and head[:3] != b"\xff\x11\x02":
-                continue
-            rec = load_idb_blob(blob.read_bytes())
-        except Exception:
+        segments, cur = [], []
+        for b in blocks:
+            if b.get("type") == "text" and (b.get("text") or "").strip():
+                cur.append(b["text"].strip())
+            elif b.get("type") == "tool_use":
+                if cur:
+                    segments.append("\n\n".join(cur)); cur = []
+                inp = b.get("input") if isinstance(b.get("input"), dict) else {}
+                if b.get("name") == "artifacts" and inp.get("title"):
+                    cur.append(f"*[artifact {inp.get('command') or 'created'}: «{inp['title']}»]*")
+        if cur:
+            segments.append("\n\n".join(cur))
+        if not segments:
             continue
-        tree = rec.get("tree") if isinstance(rec, dict) else None
-        if not isinstance(tree, dict) or tree.get("kind") != "code_session":
-            continue
-        cid = str(rec.get("conversationUuid") or "")
-        written = float(rec.get("writtenAt") or 0)
-        if cid not in found or written > found[cid][2]:
-            found[cid] = (rec, blob, written)
-    return sorted(((r, b) for r, b, _ in found.values()),
-                  key=lambda rb: float(rb[0].get("writtenAt") or 0), reverse=True)
+        if not all_text:
+            segments = segments[-1:]
+        for i, text in enumerate(segments):
+            turns.append({"role": "assistant" if i == len(segments) - 1 else "assistant_progress",
+                          "text": text, "ts": ts})
+    cid = str(rec.get("conversationUuid") or tree.get("uuid") or "")
+    omitted = len(msgs) - len(chain)
+    meta = {"agent": "chat", "path": f"claude-desktop-cache:chat:{cid}", "session_id": cid,
+            "cwd": "Claude Desktop chats (claude.ai)", "title": tree.get("name") or snippet(
+                next((t["text"] for t in turns if t["role"] == "user"), "(empty chat)")),
+            "first_ts": parse_ts(tree.get("created_at")) or (turns[0]["ts"] if turns else None),
+            "last_ts": parse_ts(tree.get("updated_at")) or (turns[-1]["ts"] if turns else None),
+            "model": tree.get("model"), "turns": turns,
+            "user_messages": sum(1 for t in turns if t["role"] == "user"), "subagents": 0,
+            "source": f"Claude Desktop cache (IndexedDB), {len(chain)} messages of the displayed branch"
+                      + (f"; {omitted} messages on edited/regenerated branches omitted" if omitted else "")}
+    return meta
 
 
 def remote_session_id(rec):
@@ -1337,7 +1470,9 @@ def discover(agent, project, all_projects):
         if cloud:
             files += [("remote", CloudRef(s)) for s in cloud]
         else:
-            files += [("remote", b) for _, b in remote_sessions()]
+            files += [("remote", ref) for _, ref in remote_sessions()]
+    if agent == "chat" or (agent == "all" and all_projects):
+        files += [("chat", ref) for _, ref in desktop_chats()]  # no project: only with --all-projects
     return sorted(files, key=lambda af: ref_mtime(af[1]), reverse=True)
 
 
@@ -1355,7 +1490,7 @@ class CloudRef:
 
 
 def ref_mtime(ref):
-    return ref.mtime if isinstance(ref, CloudRef) else ref.stat().st_mtime
+    return ref.mtime if isinstance(ref, (CloudRef, CacheRef)) else ref.stat().st_mtime
 
 
 # ---------------------------------------------------------------------------
@@ -1452,10 +1587,11 @@ def parse_any(agent, path, all_text=True, cloud="auto", origin=None):
     if agent == "remote":
         if isinstance(path, CloudRef):
             return parse_cloud_session(path.id, all_text=all_text)
-        for rec, blob in remote_sessions():
-            if blob == path:
-                return parse_remote_session(rec, blob, all_text=all_text)
+        if isinstance(path, CacheRef):
+            return parse_remote_session(path.rec, str(path), all_text=all_text)
         raise SystemExit(f"error: remote session cache not readable: {path}")
+    if agent == "chat":
+        return parse_chat_record(path.rec, all_text=all_text)
     parsed = parse_claude_session(path, all_text=all_text, cloud=cloud, origin=origin)
     if agent == "desktop":
         meta = desktop_meta_for(path) or {}
@@ -1498,7 +1634,7 @@ def cmd_list(args):
         if agent == "codex" and parsed["session_id"] in codex_titles:
             parsed["title"] = codex_titles[parsed["session_id"]]
         mtime = datetime.fromtimestamp(ref_mtime(path), tz=timezone.utc)
-        active = (now - mtime).total_seconds() < ACTIVE_WINDOW_SECONDS
+        active = agent in ("claude", "desktop") and (now - mtime).total_seconds() < ACTIVE_WINDOW_SECONDS
         condensed_chars = len(render_markdown(parsed))
         rows.append({
             "agent": agent,
@@ -1562,7 +1698,8 @@ def render_markdown(parsed, max_chars=0):
     lines = []
     agent_name = {"claude": "Claude Code", "codex": "Codex CLI",
                   "desktop": "Claude Desktop (local coding session)",
-                  "remote": "claude.ai/code remote session"}.get(parsed["agent"], parsed["agent"])
+                  "remote": "claude.ai/code remote session",
+                  "chat": "claude.ai chat (Claude Desktop)"}.get(parsed["agent"], parsed["agent"])
     lines.append("# Imported session context")
     lines.append(f"- **Agent:** {agent_name}")
     lines.append(f"- **Project:** {parsed['cwd'] or '?'}")
@@ -1731,12 +1868,16 @@ def cmd_extract(args):
                     real_id = (meta or {}).get("id") or stem
                 elif agent == "desktop":
                     real_id = (desktop_meta_for(path) or {}).get("sessionId") or stem
-                elif agent == "remote":
-                    real_id = path.id if isinstance(path, CloudRef) else next(
-                        (remote_session_id(r) for r, b in remote_sessions() if b == path), stem)
+                elif agent in ("remote", "chat"):
+                    real_id = path.id
                 if stem.startswith(sid) or real_id.startswith(sid) or sid in stem or sid in real_id:
                     match = (agent, path)
                     break
+            if not match and not args.all_projects and not sid.startswith("cse_"):
+                for agent, path in discover(args.agent, args.project, True):  # e.g. a chat or another project
+                    if path.stem.startswith(sid) or sid in path.stem:
+                        match = (agent, path)
+                        break
             if not match and sid.startswith("cse_"):
                 if cloud_token() and cloud_sessions():
                     # not in the list (e.g. very old) — try the id directly
@@ -1805,9 +1946,10 @@ def main():
     common.add_argument("--project", help="project path (default: current directory)")
     common.add_argument("--all-projects", action="store_true",
                         help="search sessions of all projects")
-    common.add_argument("--agent", choices=("claude", "desktop", "remote", "codex", "all"), default="all",
+    common.add_argument("--agent", choices=("claude", "desktop", "remote", "chat", "codex", "all"), default="all",
                         help="which agent's sessions: claude (CLI), desktop (Claude Desktop local "
                              "coding sessions, macOS), remote (claude.ai/code sessions from "
+                             "Claude Desktop's cache, macOS), chat (ordinary claude.ai chats from "
                              "Claude Desktop's cache, macOS), codex, or all (default)")
     common.add_argument("--json", action="store_true", help="machine-readable output")
 

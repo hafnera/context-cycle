@@ -1,6 +1,6 @@
 ---
 name: cycle-context
-description: Import a previous agent session (Claude Code CLI, Claude Desktop local coding sessions and cached claude.ai/code remote sessions on macOS, or Codex CLI) into the current conversation as condensed context — only the user's messages and each turn's final assistant answer, without tool calls, code edits, intermediate steps or thinking. Use when the user wants to continue from, reference, or "load" an earlier session, e.g. "hol den Kontext aus der letzten Session", "import the session where we built X", "what did we discuss yesterday in project Y", "füge die Session von gestern als Kontext hinzu".
+description: Import a previous agent session or chat (Claude Code CLI, Claude Desktop local coding sessions, claude.ai/code remote sessions, ordinary claude.ai chats cached by Claude Desktop on macOS, or Codex CLI) into the current conversation as condensed context — only the user's messages and each turn's final assistant answer, without tool calls, code edits, intermediate steps or thinking. Use when the user wants to continue from, reference, or "load" an earlier session, e.g. "hol den Kontext aus der letzten Session", "import the session where we built X", "what did we discuss yesterday in project Y", "füge die Session von gestern als Kontext hinzu", "lade den Claude-Chat über Freiberuflichkeit als Kontext".
 ---
 
 # Session Context Import
@@ -13,6 +13,7 @@ Supported sources (parsed from local disk, nothing leaves the machine):
 - **Codex CLI**: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
 - **Claude Desktop (macOS) local coding sessions**: metadata in `~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json` (title, model, cwd), transcript is the matching `<cliSessionId>.jsonl` under `~/.claude/projects`. Listed as `[desktop]`.
 - **Cloud sessions continued locally** (a claude.ai/code session taken over in the IDE/CLI): the local jsonl holds only a replay of the cloud main chain without the cloud subagents' reports. The extractor identifies the original cloud session automatically (shared message/tool ids), fetches its complete history and uses it up to the takeover — first run ~20 s, then cached. If the header shows a ⚠ "continues a cloud session" warning, the origin could not be fetched: tell the user, and rerun with `--cloud-origin <session_… id>` when they know it. Listings show such sessions with local-only sizes unless the cloud data is already cached.
+- **Ordinary claude.ai CHATS (Claude Desktop, macOS)**: read from Claude Desktop's IndexedDB cache (only chats that were opened in Desktop). Listed as `[chat]` with `--agent chat` or `--all-projects`, grouped under "Claude Desktop chats (claude.ai)"; the extract follows the displayed branch (edited/regenerated branches are omitted and counted in the `Source:` line), drops thinking and tool traffic, keeps the assistant's text before tool calls as agent notes, and marks attached files and artifacts.
 - **claude.ai/code REMOTE (cloud) sessions**: fetched **complete** from the Anthropic API (`/v1/code/sessions/<id>/events`, paginated back to sequence 1) using the logged-in Claude Code CLI's OAuth token (macOS Keychain / `~/.claude/.credentials.json`). Listed as `[remote]` with `--all-projects` or `--agent remote` (metadata-only rows: title, repo, status, session context size). Accepts the claude.ai id (`session_…`) or API id (`cse_…`). Offline or logged out, Claude Desktop's IndexedDB cache is the fallback — but that cache is tail-only for long sessions (`headCut`, flagged in the extract header). The extract's `Source:` line tells which one was used; report it to the user.
 
 All commands use the bundled script (stdlib-only Python 3). `<skill>` below stands for this skill's base directory (announced when the skill loads):
@@ -32,7 +33,7 @@ python3 "<skill>/scripts/extract_session.py" list
 Defaults: sessions of **both agents** for the **current project directory**, newest first, max 15. Useful options:
 
 - `--all-projects` — the user references another project or "some session last week"
-- `--agent claude|desktop|remote|codex` — the user names the tool ("die Codex Session", "die Desktop-Session", "die claude.ai/code Session", "Claude Code session")
+- `--agent claude|desktop|remote|chat|codex` — the user names the tool ("die Codex Session", "die Desktop-Session", "die claude.ai/code Session", "Claude Code session", "der Chat in Claude Desktop" / "the Claude chat about …")
 - `--grep "keyword"` — the user remembers a topic, not a date ("the session about the sankey widget")
 - `--project /path/to/dir` — sessions of a specific other project
 - `-n 30` — show more
@@ -42,7 +43,7 @@ The user usually does **not** know session ids — work from their description:
 
 - Project/repo named or implied → `--project PATH` or the current directory; "some session last week", "in another project" → `--all-projects`.
 - A topic ("the session about the sankey widget") → `--grep "sankey"`; titles in the list are the sessions' own titles, so they usually match the user's wording.
-- A tool named ("the Codex session", "the cloud session", "the Desktop session") → `--agent codex|remote|desktop`.
+- A tool named ("the Codex session", "the cloud session", "the Desktop session", "the chat") → `--agent codex|remote|desktop|chat`. A chat is addressed by its title: `list --agent chat --grep "<title words>"`; "the most recent one" = the newest row.
 - A date ("yesterday", "last Friday") → compare with the last-activity column.
 
 Interpreting the list:

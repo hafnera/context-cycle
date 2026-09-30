@@ -613,3 +613,114 @@ class ModelDetectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChatTests(unittest.TestCase):
+    """Ordinary claude.ai chats from Claude Desktop's cache (blob files and
+    inline LevelDB values)."""
+
+    ROOT = "00000000-0000-4000-8000-000000000000"
+
+    def chat_record(self, cid="chat-uuid-1", title="Freiberufler-Frage"):
+        def H(u, p, i, text, files=()):
+            return {"uuid": u, "parent_message_uuid": p, "index": i, "sender": "human",
+                    "created_at": f"2026-02-01T10:{i:02d}:00Z", "content": [{"type": "text", "text": text}],
+                    "files": list(files), "attachments": []}
+
+        def A(u, p, i, blocks):
+            return {"uuid": u, "parent_message_uuid": p, "index": i, "sender": "assistant",
+                    "created_at": f"2026-02-01T10:{i:02d}:00Z", "content": blocks}
+        msgs = [
+            H("h1", self.ROOT, 0, "Kann ich freiberuflich arbeiten?"),
+            A("a1", "h1", 1, [{"type": "thinking", "thinking": "secret reasoning"},
+                              {"type": "text", "text": "Ich pruefe das kurz."},
+                              {"type": "tool_use", "id": "t1", "name": "web_search", "input": {"query": "x"}},
+                              {"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "RESULT-NOISE"}]},
+                              {"type": "text", "text": "Ja, als Freiberufler geht das."}]),
+            H("h2", "a1", 2, "Und die Nachteile?", files=[{"file_name": "vertrag.pdf"}]),
+            A("a2", "h2", 3, [{"type": "text", "text": "Alte Antwort (abandoned branch)"}]),
+            A("a3", "h2", 4, [{"type": "text", "text": "Die Nachteile sind ..."},
+                              {"type": "tool_use", "id": "t2", "name": "artifacts",
+                               "input": {"command": "create", "title": "Vergleich"}},
+                              {"type": "text", "text": "Ich habe dir eine Uebersicht erstellt."}]),
+        ]
+        return {"conversationUuid": cid, "product": "chat", "fetchedAt": 1700000000000,
+                "conversationUpdatedAt": 1700000000000, "messageCount": 5,
+                "tree": {"uuid": cid, "name": title, "model": "claude-opus-5-5",
+                         "created_at": "2026-02-01T10:00:00Z", "updated_at": "2026-02-01T10:04:00Z",
+                         "current_leaf_message_uuid": "a3",
+                         "parentByChildUuid": {"h1": self.ROOT, "a1": "h1", "h2": "a1", "a2": "h2", "a3": "h2"},
+                         "chat_messages": msgs}}
+
+    def test_parse_chat_displayed_branch_only(self):
+        parsed = ex.parse_chat_record(self.chat_record())
+        md = ex.render_markdown(parsed)
+        self.assertEqual([t["role"] for t in parsed["turns"]],
+                         ["user", "assistant_progress", "assistant", "user", "assistant_progress", "assistant"])
+        for noise in ("abandoned branch", "secret reasoning", "RESULT-NOISE", "web_search"):
+            self.assertNotIn(noise, md)
+        self.assertIn("*[file attached: vertrag.pdf]*", md)
+        self.assertIn("artifact create: «Vergleich»", md)
+        self.assertEqual(parsed["title"], "Freiberufler-Frage")
+        self.assertEqual(parsed["user_messages"], 2)
+        self.assertIn("1 messages on edited/regenerated branches omitted", parsed["source"])
+        self.assertIn("claude.ai chat (Claude Desktop)", md)
+        self.assertRegex(md, r"\*\*Time:\*\* 2026-02-01 \d\d:00 → 2026-02-01 \d\d:04")  # local time zone
+        final = ex.parse_chat_record(self.chat_record(), all_text=False)
+        self.assertEqual([t["role"] for t in final["turns"]], ["user", "assistant", "user", "assistant"])
+
+    @staticmethod
+    def _varint(n):
+        out = bytearray()
+        while True:
+            b = n & 0x7f; n >>= 7
+            out.append(b | (0x80 if n else 0))
+            if not n:
+                return bytes(out)
+
+    def test_leveldb_log_reader_and_chat_discovery(self):
+        import leveldb
+        enc = DesktopCacheTests._v8
+        tmp = Path(tempfile.mkdtemp()); ldb = tmp / "leveldb"; ldb.mkdir(); blobdir = tmp / "blob"; blobdir.mkdir()
+
+        def batch(seq, entries):
+            body = seq.to_bytes(8, "little") + len(entries).to_bytes(4, "little")
+            for t, k, v in entries:
+                body += bytes([t]) + self._varint(len(k)) + k + ((self._varint(len(v)) + v) if t == 1 else b"")
+            return body
+
+        def record(data, rtype=1):
+            return b"\0\0\0\0" + len(data).to_bytes(2, "little") + bytes([rtype]) + data
+        v1 = b"\x09" + enc(None, self.chat_record())                       # version varint + V8 value
+        v2 = b"\x09" + enc(None, self.chat_record("chat-uuid-2", "Deleted later"))
+        v3 = b"\x09" + enc(None, self.chat_record("chat-uuid-3", "Fragmented record"))
+        third = batch(7, [(1, b"k3", v3)])
+        log = (record(batch(1, [(1, b"k1", v1), (1, b"k2", v2)]))
+               + record(batch(3, [(0, b"k2", b"")]))                              # deletion wins (newer seq)
+               + record(third[:100], 2) + record(third[100:], 4))                  # FIRST + LAST fragments
+        (ldb / "000003.log").write_bytes(log)
+        values = leveldb.latest_values(ldb)
+        self.assertEqual(sorted(values), [b"k1", b"k3"])
+        self.assertEqual(values[b"k3"], v3)
+        saved = (ex.DESKTOP_IDB_BLOB_DIR, ex.DESKTOP_IDB_LEVELDB_DIR)
+        ex.DESKTOP_IDB_BLOB_DIR, ex.DESKTOP_IDB_LEVELDB_DIR = blobdir, ldb
+        ex._idb_cache["records"] = None
+        try:
+            chats = ex.desktop_chats()
+            self.assertEqual(sorted(ref.id for _, ref in chats), ["chat-uuid-1", "chat-uuid-3"])
+            self.assertEqual([a for a, _ in ex.discover("chat", None, True)], ["chat", "chat"])
+            self.assertFalse(any(a == "chat" for a, _ in ex.discover("all", None, False)))  # only --all-projects
+            self.assertTrue(any(a == "chat" for a, _ in ex.discover("all", None, True)))
+            parsed = ex.parse_any("chat", chats[0][1])
+            self.assertEqual(parsed["agent"], "chat")
+        finally:
+            ex.DESKTOP_IDB_BLOB_DIR, ex.DESKTOP_IDB_LEVELDB_DIR = saved
+            ex._idb_cache["records"] = None
+
+    def test_leveldb_table_block_entries(self):
+        import leveldb
+        v = self._varint
+        block = (v(0) + v(3) + v(1) + b"abc" + b"X"
+                 + v(2) + v(1) + v(2) + b"d" + b"YZ"
+                 + (0).to_bytes(4, "little") + (1).to_bytes(4, "little"))   # one restart point
+        self.assertEqual(list(leveldb._block_entries(block)), [(b"abc", b"X"), (b"abd", b"YZ")])

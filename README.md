@@ -1,6 +1,6 @@
 # context-cycle
 
-A Claude Code **plugin** that makes sure long agent sessions never lose knowledge to context compaction — and lets you pull any earlier session (Claude Code CLI, Claude Desktop, claude.ai/code cloud sessions, Codex CLI) into the current conversation as clean, condensed context.
+A Claude Code **plugin** that makes sure long agent sessions never lose knowledge to context compaction — and lets you pull any earlier session (Claude Code CLI, Claude Desktop, claude.ai/code cloud sessions, ordinary claude.ai chats, Codex CLI) into the current conversation as clean, condensed context.
 
 > 📖 **[The Context Cycle](docs/context-cycle.md)** — how the pieces close the loop, with diagrams, design rationale and limitations.
 
@@ -47,6 +47,7 @@ Just describe the session; the agent finds it:
 
 - "Import the session from yesterday in project X as context"
 - "Load the Codex session where we built the sankey widget"
+- "Import the Claude chat about freelancing without a trade registration"
 - "Use cycle-context on the current session so you know again what this session is about" (great right after a compaction)
 - or explicitly: `/cycle-context` followed by a description
 
@@ -75,6 +76,7 @@ Per user turn: `## 👤 USER MESSAGE` → `### 🧭 SUBAGENT «name»` blocks (s
 | Claude Desktop local sessions (macOS) | metadata in `~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json`, transcript = the matching CLI jsonl | listed as `[desktop]` with the Desktop title |
 | claude.ai/code cloud sessions | Anthropic API `/v1/code/sessions/<id>/events`, paginated back to the first event, with your CLI login token | listed as `[remote]` (`--all-projects` or `--agent remote`); `session_…` or `cse_…` ids; Desktop's IndexedDB cache is the offline fallback (tail-only) |
 | Cloud sessions **continued locally** (IDE/CLI takeover, "(fork)") | the local jsonl holds only a *replay* of the cloud main chain (no subagent events); the extractor identifies the original cloud session by the message/tool ids shared with the replay and uses its complete history (incl. subagent reports) up to the takeover, the local file for the rest | needs the CLI login token, cached under `~/.cache/context-cycle/`; `--cloud-origin ID` if the origin cannot be found, `--no-cloud` to stay offline (the header then warns that subagent reports are missing) |
+| Ordinary claude.ai **chats** (macOS) | Claude Desktop's IndexedDB cache (blob files and inline LevelDB values, decoded by `leveldb.py` + `v8idb.py`): the conversation tree as rendered in the app | listed as `[chat]` (`--agent chat` or `--all-projects`); only chats opened in Desktop are cached; the displayed branch is extracted, edited/regenerated branches are omitted; assistant text before a tool call becomes an agent note, thinking/tool traffic is dropped, artifacts and attached files appear as markers |
 | Codex CLI | `~/.codex/sessions/**/rollout-*.jsonl` | titles from `session_index.jsonl` |
 
 **Transcript retention:** Claude Code deletes CLI transcripts after `cleanupPeriodDays` (default 30). For a complete long-term history set it high in `~/.claude/settings.json`, e.g. `"cleanupPeriodDays": 3650`.
@@ -91,12 +93,13 @@ X=~/.claude/plugins/cache/hafnera/context-cycle/<version>/skills/cycle-context/s
 python3 $X list                                   # sessions of the current project
 python3 $X list --all-projects --grep "sankey"    # everywhere, by keyword
 python3 $X list --agent remote                    # your claude.ai/code cloud sessions
+python3 $X list --agent chat --grep "freelanc"     # ordinary claude.ai chats cached by Claude Desktop
 python3 $X extract <id-prefix> --all-projects     # condensed transcript to stdout
 python3 $X extract --current -o ctx.md            # the running session of this project
 python3 $X extract <id> --final-only --no-subagent-reports   # a lower detail level
 ```
 
-Options: `--agent claude|desktop|remote|codex|all`, `--project PATH`, `--all-projects`, `--grep TEXT`, `--current`, `--path FILE`, `--no-subagent-reports`, `--no-subagents`, `--final-only`, `--last N`, `--max-chars N`, `--cloud-origin ID`, `--no-cloud`, `--json`, `-o FILE`. Every extract prints `Imported context: ~Xk tokens ≈ Y% …` on stderr.
+Options: `--agent claude|desktop|remote|chat|codex|all`, `--project PATH`, `--all-projects`, `--grep TEXT`, `--current`, `--path FILE`, `--no-subagent-reports`, `--no-subagents`, `--final-only`, `--last N`, `--max-chars N`, `--cloud-origin ID`, `--no-cloud`, `--json`, `-o FILE`. Every extract prints `Imported context: ~Xk tokens ≈ Y% …` on stderr.
 
 ## Hooks and tuning
 
@@ -115,7 +118,7 @@ The checkpoint threshold is measured from the latest main-context usage block in
 python3 -m unittest discover -s tests -v
 ```
 
-Synthetic sessions cover tool calls, progress notes, interjections, rewinds, duplicates, sidechains, Agent-tool subagents incl. a resumed invocation, Workflow runs, background tasks, slash commands, Codex rollouts, a locally continued cloud session (origin search, merge, cache, offline warning), model/window detection from the running session, the Desktop cache decoder (V8 + Snappy) and both hooks. The structural invariants (per-turn order, no noise leaks, identical user counts and monotonic sizes across detail levels) are asserted there and were additionally validated against 20+ MB real sessions.
+Synthetic sessions cover tool calls, progress notes, interjections, rewinds, duplicates, sidechains, Agent-tool subagents incl. a resumed invocation, Workflow runs, background tasks, slash commands, Codex rollouts, a locally continued cloud session (origin search, merge, cache, offline warning), model/window detection from the running session, claude.ai chats (displayed branch, notes, markers) with the LevelDB log/table reader, the Desktop cache decoder (V8 + Snappy) and both hooks. The structural invariants (per-turn order, no noise leaks, identical user counts and monotonic sizes across detail levels) are asserted there and were additionally validated against 20+ MB real sessions.
 
 ## Notes and limits
 
