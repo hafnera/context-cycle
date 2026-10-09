@@ -48,7 +48,7 @@ The user usually does **not** know session ids — work from their description:
 
 Interpreting the list:
 
-- Sessions are grouped by **project entity** (`📁` header per repo/directory, ordered by most recent activity). Each row shows `[agent] id  last-activity  #user-msgs  ~tokens  title`, where `~tokens` is the estimated context cost of the **Full** extract (chars/4). Cloud sessions (`[remote]`) show metadata only (title, repo, status, the session's own context size).
+- Sessions are grouped by **project entity** (`📁` header per repo/directory, ordered by most recent activity). Each row shows `[agent] id  last-activity  #user-msgs  ~tokens  title`, where `~tokens` is the estimated context cost of the **Full** extract (calibrated: ~2 chars per token for Claude 5 models). Cloud sessions (`[remote]`) show metadata only (title, repo, status, the session's own context size).
 - A row marked `*ACTIVE*` is almost certainly **this currently running session** (or another session running in parallel).
 - Match the user's description (topic, date, project). If exactly one session fits, proceed without asking. If several plausibly fit, show the user the shortlist (title, date, token estimate) and ask which one.
 
@@ -117,7 +117,7 @@ The command writes a new session file into project B's directory under `~/.claud
 
 After ingesting, tell the user in 2–4 sentences what context was imported (session title, time range, number of turns, main topics) so they can verify it's the right one — and explicitly whether it was the **full** extract (default) or limited on their instruction.
 
-**Always report the import size.** Every extract prints an `Imported context: ~X.Xk tokens ≈ Y% of the …-token context window (model: …, this session)` line on stderr — relay exactly these numbers (tokens in k, percentage of the context window) to the user in your confirmation. The model and window are those of the **running** session, read from its transcript (`from settings` marks the fallback). If the line is missing, compute chars/4 yourself and say the window was assumed.
+**Always report the import size.** Every extract prints an `Imported context: ~X.Xk tokens ≈ Y% of the …-token context window (model: …, this session)` line on stderr — relay exactly these numbers (tokens in k, percentage of the context window) to the user in your confirmation. The model and window are those of the **running** session, read from its transcript (`from settings` marks the fallback). `(measured)` means the exact count from the token-counting API (CLI login), `(estimated)` the calibrated estimate (~2 chars per token for Claude 5 models). If the line is missing, estimate chars/2 yourself and say so.
 
 Then continue with the user's actual task, using the imported context.
 

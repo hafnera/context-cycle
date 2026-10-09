@@ -1618,12 +1618,53 @@ def current_model_and_window(project=None):
     return f"{model}, {origin}", model_window(model, usage)
 
 
-def import_summary(chars, project=None):
-    est_tokens = chars // 4
+def count_tokens(text, model=None):
+    """Exact token count via the Anthropic token-counting API with the CLI
+    login token (fast: ~0.5 s for 900k chars). None when unavailable or
+    disabled (CONTEXT_CYCLE_NO_API=1)."""
+    if os.environ.get("CONTEXT_CYCLE_NO_API") or not text:
+        return None
+    token = cloud_token()
+    if not token:
+        return None
+    import urllib.request
+    api_model = re.sub(r"\[.*?\]$", "", (model or "").split(",")[0].strip())
+    if not api_model.startswith("claude-"):
+        api_model = "claude-opus-5-5"
+    body = json.dumps({"model": api_model, "messages": [{"role": "user", "content": text}]}).encode("utf-8")
+    req = urllib.request.Request("https://api.anthropic.com/v1/messages/count_tokens", data=body, headers={
+        "Authorization": f"Bearer {token}", "anthropic-version": "2023-06-01",
+        "anthropic-beta": "oauth-2025-04-20,claude-code-20250219",
+        "content-type": "application/json", "User-Agent": "context-cycle/1.16"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return int(json.loads(r.read().decode("utf-8")).get("input_tokens"))
+    except Exception:
+        return None
+
+
+def chars_per_token(model=None):
+    """Calibrated against the token-counting API on real extracts (German and
+    English Markdown): Claude 5 models ≈ 2.0 chars/token, older ones ≈ 2.6.
+    chars/4 (the common rule of thumb) undercounts these transcripts 2×."""
+    m = model or ""
+    return 2.0 if ("-5" in m or "[1m]" in m or not m) else 2.6
+
+
+def estimate_tokens(text_or_chars, model=None):
+    chars = text_or_chars if isinstance(text_or_chars, int) else len(text_or_chars)
+    return int(chars / chars_per_token(model))
+
+
+def import_summary(text, project=None):
+    """The size line: exact (API) when logged in, else the calibrated estimate."""
     model, window = current_model_and_window(project)
-    pct = est_tokens / window * 100
+    exact = count_tokens(text, model) if isinstance(text, str) else None
+    tokens = exact if exact is not None else estimate_tokens(text, model)
+    how = "measured" if exact is not None else "estimated"
+    pct = tokens / window * 100
     pct_str = "<0.1" if 0 < pct < 0.1 else f"{pct:.1f}"
-    return (f"Imported context: ~{est_tokens/1000:.1f}k tokens ≈ {pct_str}% of the "
+    return (f"Imported context: ~{tokens/1000:.1f}k tokens ({how}) ≈ {pct_str}% of the "
             f"{window//1000}k-token context window (model: {model})")
 
 
@@ -1682,6 +1723,8 @@ def cmd_list(args):
         mtime = datetime.fromtimestamp(ref_mtime(path), tz=timezone.utc)
         active = agent in ("claude", "desktop") and (now - mtime).total_seconds() < ACTIVE_WINDOW_SECONDS
         condensed_chars = len(render_markdown(parsed))
+        list_model = cmd_list.model if hasattr(cmd_list, "model") else current_model_and_window(args.project)[0]
+        cmd_list.model = list_model
         rows.append({
             "agent": agent,
             "session_id": parsed["session_id"],
@@ -1691,7 +1734,7 @@ def cmd_list(args):
             "start": fmt_ts(parsed["first_ts"]),
             "end": fmt_ts(parsed["last_ts"]),
             "condensed_chars": condensed_chars,
-            "est_tokens": condensed_chars // 4,
+            "est_tokens": estimate_tokens(condensed_chars, list_model),
             "active": active,
             "path": str(path),
         })
@@ -1990,7 +2033,7 @@ def cmd_extract(args):
         print(f"Wrote {len(result):,} chars ({total_turns} turns) to {args.out}")
     else:
         print(result)
-    print(import_summary(len(result), args.project), file=sys.stderr)
+    print(import_summary(result, args.project), file=sys.stderr)
 
 
 def transcript_version(path):
@@ -2096,7 +2139,9 @@ def cmd_create(args):
                                         model=parsed.get("model") or model)
         path = project_dir / f"{sid}.jsonl"
         path.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries), encoding="utf-8")
-        chars = sum(len(json.dumps(e.get("message", {}), ensure_ascii=False)) for e in entries)
+        texts = "\n".join(m["content"] if isinstance(m.get("content"), str) else
+                          "\n".join(b.get("text", "") for b in m.get("content") or [] if isinstance(b, dict))
+                          for m in (e.get("message") for e in entries) if isinstance(m, dict))
         n_user = sum(1 for e in entries if e.get("type") == "user")
         n_asst = sum(1 for e in entries if e.get("type") == "assistant")
         print(f"Created session {sid} in project {into}\n"
@@ -2104,7 +2149,7 @@ def cmd_create(args):
               f"  detail level: {parsed.get('detail_level') or 'Full'}; {n_user} user + {n_asst} assistant messages\n"
               f"  file: {path}\n"
               f"  resume it there:  cd \"{into}\" && claude --resume {sid}")
-        print(import_summary(chars, args.project), file=sys.stderr)
+        print(import_summary(texts, args.project), file=sys.stderr)
         created.append({"session_id": sid, "path": str(path), "project": str(into)})
     if args.json:
         print(json.dumps(created if len(created) > 1 else created[0], indent=2))

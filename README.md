@@ -53,7 +53,7 @@ Just describe the session; the agent finds it:
 - "Use cycle-context on the current session so you know again what this session is about" (great right after a compaction)
 - or explicitly: `/cycle-context` followed by a description
 
-The agent lists matching sessions **grouped by repo/project** with title, last-activity date and the estimated token size, picks the one that matches your description or shows you a short list to choose from, asks for the **detail level**, imports, and confirms what was imported including the import size (`Imported context: ~X.Xk tokens ≈ Y% of the …-token context window (model: …, this session)`). The percentage refers to the window of the model the **running** session actually uses — read from its own transcript, not from settings.
+The agent lists matching sessions **grouped by repo/project** with title, last-activity date and the estimated token size, picks the one that matches your description or shows you a short list to choose from, asks for the **detail level**, imports, and confirms what was imported including the import size (`Imported context: ~X.Xk tokens ≈ Y% of the …-token context window (model: …, this session)`). The percentage refers to the window of the model the **running** session actually uses — read from its own transcript, not from settings. The token count is **measured** with Anthropic's token-counting API (using the CLI login, ~0.5 s even for very long extracts) and marked `(measured)`; without login it is `(estimated)` with a calibrated ~2 characters per token for Claude 5 models — the common chars/4 rule undercounts these transcripts about 2×. Listings always use the estimate. `CONTEXT_CYCLE_NO_API=1` disables the API call.
 
 ### Detail levels (asked via question card before every import)
 
@@ -113,7 +113,7 @@ python3 $X extract <id> --final-only --no-subagent-reports   # a lower detail le
 python3 $X create <id> --all-projects --into ~/Coding/ProjectB  # a NEW session in ProjectB from that extract
 ```
 
-`create` takes the same selection and detail options as `extract` plus `--into DIR` (the target project directory) and prints the new session id with the resume command. Options: `--agent claude|desktop|remote|chat|codex|all`, `--project PATH`, `--all-projects`, `--grep TEXT`, `--current`, `--path FILE`, `--no-subagent-reports`, `--no-subagents`, `--final-only`, `--last N`, `--max-chars N`, `--cloud-origin ID`, `--no-cloud`, `--json`, `-o FILE`. Every extract prints `Imported context: ~Xk tokens ≈ Y% …` on stderr.
+`create` takes the same selection and detail options as `extract` plus `--into DIR` (the target project directory) and prints the new session id with the resume command. Options: `--agent claude|desktop|remote|chat|codex|all`, `--project PATH`, `--all-projects`, `--grep TEXT`, `--current`, `--path FILE`, `--no-subagent-reports`, `--no-subagents`, `--final-only`, `--last N`, `--max-chars N`, `--cloud-origin ID`, `--no-cloud`, `--json`, `-o FILE`. Every extract prints `Imported context: ~Xk tokens (measured|estimated) ≈ Y% …` on stderr.
 
 ## Hooks and tuning
 

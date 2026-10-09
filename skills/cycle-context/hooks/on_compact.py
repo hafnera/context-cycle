@@ -23,6 +23,7 @@ arguments to print the full text in one piece (manual/debug use).
 """
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -62,8 +63,10 @@ def build_ask_text(hook_input):
     for label, flags in DETAIL_LEVELS:
         r = subprocess.run([sys.executable or "python3", str(script), "extract", *target, *flags],
                            capture_output=True, text=True, timeout=120)
-        chars = len(r.stdout) if r.returncode == 0 else 0
-        rows.append(f"- {label}: ~{chars // 4 / 1000:.1f}k tokens"
+        # the extractor's own size line (exact via the token-counting API when logged in)
+        m = re.search(r"Imported context: ~([\d.]+)k tokens", r.stderr or "") if r.returncode == 0 else None
+        size = f"~{m.group(1)}k tokens" if m else f"~{len(r.stdout) / 2 / 1000:.1f}k tokens (estimated)"
+        rows.append(f"- {label}: {size}"
                     + (f"  (flags: {' '.join(flags)})" if flags else "  (no flags)"))
     return ("The context was just compacted. The full history of this session is still "
             "on disk and can be restored with the cycle-context skill. BEFORE doing anything "

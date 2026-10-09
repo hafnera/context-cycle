@@ -590,7 +590,7 @@ class ModelDetectionTests(unittest.TestCase):
             model, window = ex.current_model_and_window()
             self.assertEqual(model, "claude-opus-5-5, this session")   # transcript wins over settings
             self.assertEqual(window, 1_000_000)
-            self.assertIn("1000k-token", ex.import_summary(4000))
+            self.assertIn("1000k-token", ex.import_summary(4000))                # int = chars, estimated
             os.environ["CLAUDE_CODE_SESSION_ID"] = "does-not-exist"
             model, window = ex.current_model_and_window(project="/nowhere/at/all")
             self.assertEqual(model, "claude-fable-5-1, from settings")  # fallback: settings
@@ -745,6 +745,26 @@ class PathTests(unittest.TestCase):
         self.assertNotEqual(nfc, nfd)
         self.assertEqual(ex.munge_path(nfd), ex.munge_path(nfc))
         self.assertTrue(ex.munge_path(nfc).endswith("Vertical-Consulting---Vertr-ge"))
+
+
+class TokenEstimateTests(unittest.TestCase):
+    def test_calibrated_estimate_and_measured_summary(self):
+        self.assertEqual(ex.estimate_tokens("x" * 2000, "claude-opus-5-5"), 1000)   # Claude 5: 2 chars/token
+        self.assertEqual(ex.estimate_tokens(2600, "claude-opus-4-8"), 1000)         # older: 2.6
+        saved = (ex.count_tokens, os.environ.get("CONTEXT_CYCLE_NO_API"))
+        try:
+            ex.count_tokens = lambda text, model=None: 12345
+            self.assertIn("~12.3k tokens (measured)", ex.import_summary("some text"))
+            ex.count_tokens = lambda text, model=None: None
+            line = ex.import_summary("y" * 4000)
+            self.assertIn("(estimated)", line)
+            os.environ["CONTEXT_CYCLE_NO_API"] = "1"
+            ex.count_tokens = saved[0]
+            self.assertIsNone(ex.count_tokens("abc", "claude-opus-5-5"))             # disabled: no network
+        finally:
+            ex.count_tokens = saved[0]
+            if saved[1] is None:
+                os.environ.pop("CONTEXT_CYCLE_NO_API", None)
 
 
 class CreateSessionTests(unittest.TestCase):

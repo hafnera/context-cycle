@@ -138,12 +138,13 @@ enum Backend {
         return try JSONDecoder().decode([SessionRow].self, from: data)
     }
 
-    /// Size of the condensed extract at a detail level (chars / 4), via `extract -o /dev/null`.
+    /// Size of the condensed extract at a detail level: the extractor's own size line
+    /// (exact via the token-counting API when logged in, else its calibrated estimate).
     static func estimateTokens(row: SessionRow, projectDir: String, level: DetailLevel) -> Int? {
         guard let r = try? run(["extract"] + selectionArgs(for: row, projectDir: projectDir) + level.flags + ["-o", "/dev/null"]) else { return nil }
-        guard let m = r.out.range(of: #"Wrote ([\d,]+) chars"#, options: .regularExpression) else { return nil }
-        let digits = r.out[m].filter { $0.isNumber }
-        return Int(digits).map { $0 / 4 }
+        guard let m = r.err.range(of: #"Imported context: ~([\d.]+)k tokens"#, options: .regularExpression) else { return nil }
+        let num = r.err[m].drop { !$0.isNumber }.prefix { $0.isNumber || $0 == "." }
+        return Double(num).map { Int($0 * 1000) }
     }
 
     static func create(row: SessionRow, projectDir: String, level: DetailLevel, into target: String) throws -> CreateResult {
