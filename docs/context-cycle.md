@@ -17,6 +17,7 @@ When an agent's context window fills up, Claude Code compacts the conversation i
 | `cycle-checkpoint` skill | plugin skill | [`skills/cycle-checkpoint/SKILL.md`](../skills/cycle-checkpoint/SKILL.md) | The documentation checkpoint on demand |
 | Checkpoint reminder | `PostToolUse` hook | [`skills/cycle-context/hooks/pre_compact_docs_reminder.py`](../skills/cycle-context/hooks/pre_compact_docs_reminder.py) | Measures context usage after each tool call; at 80% orders the checkpoint once |
 | Restore instruction | `SessionStart(compact)` hook | [`skills/cycle-context/hooks/on_compact.py`](../skills/cycle-context/hooks/on_compact.py) | After compaction: instruct the agent to ask the detail level (with estimates) and import |
+| Mac app | SwiftUI, `app/build.sh` | [`app/ContextCycleApp.swift`](../app/ContextCycleApp.swift) | Native front end: list a project's sessions, copy one as a new session into another project or save its extract — by running the extractor script |
 | Tests | unittest | [`tests/test_extract.py`](../tests/test_extract.py) | Synthetic sessions with every special case; structural invariants |
 
 Hooks are registered by the plugin ([`hooks/hooks.json`](../hooks/hooks.json)) and apply in all projects.

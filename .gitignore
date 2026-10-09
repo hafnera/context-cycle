@@ -4,3 +4,4 @@ __pycache__/
 *-session-extract*.md
 context ausschnitt.md
 extracts/
+app/build/

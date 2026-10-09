@@ -70,6 +70,17 @@ The agent never reduces on its own; `--last N` / `--max-chars N` are likewise on
 
 Per user turn: `## 👤 USER MESSAGE` → `### 🧭 SUBAGENT «name»` blocks (summary as received, then "Here is the full report …", closed by an end marker) → `### 🤖 MAIN AGENT` section with `🔹 Agent note (time)` paragraphs, `💬 USER INTERJECTION` for messages you typed while the agent was working, and `#### ✅ MAIN AGENT — FINAL ANSWER`. If the agent answered, then continued after subagent reports arrived, the earlier answer is labeled as such. Slash commands (`⌘`), interruptions and hook-triggered follow-ups (`⚙`) stay as one-line markers. Headings inside embedded content are demoted so they can never be mistaken for the transcript's structure. A legend at the top names the detail level.
 
+## Mac app (optional)
+
+[`app/`](app/) contains **Context Cycle.app**, a small native macOS front end (SwiftUI, no dependencies) for the same extractor: pick a project directory (or the claude.ai chats / cloud sessions), see its sessions with date, message count, size and title, filter by title, and copy a selected session **as a new Claude Code session into another project** (choosing the detail level with per-level token estimates and the target directory; the app then shows the `claude --resume` command) or **save its extract as a Markdown file**. The app drives the newest installed plugin copy of `extract_session.py` (fallback: the copy bundled at build time) with `python3`.
+
+```bash
+app/build.sh            # builds app/build/Context Cycle.app (needs Xcode command line tools)
+app/build.sh --install  # also copies it to ~/Applications
+```
+
+macOS 13+, Apple Silicon or Intel (built for the machine it is compiled on), ad-hoc signed — it runs locally without notarization.
+
 ## Session sources
 
 | Source | Where it is read from | Notes |
