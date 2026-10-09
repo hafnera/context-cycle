@@ -119,14 +119,14 @@ enum Backend {
         switch row.agent {
         case "chat": return [row.session_id, "--agent", "chat", "--all-projects"]
         case "remote": return [row.session_id, "--agent", "remote", "--all-projects"]
-        default: return [row.session_id, "--agent", row.agent, "--project", projectDir]
+        default: return [row.session_id, "--agent", row.agent, "--project", projectDir.precomposedStringWithCanonicalMapping]
         }
     }
 
     static func list(source: Source, projectDir: String) throws -> [SessionRow] {
         var args = ["list", "--json", "-n", "1000"]
         switch source {
-        case .project: args += ["--project", projectDir, "--agent", "all"]
+        case .project: args += ["--project", projectDir.precomposedStringWithCanonicalMapping, "--agent", "all"]
         case .chats: args += ["--agent", "chat"]
         case .cloud: args += ["--agent", "remote"]
         }
@@ -147,7 +147,8 @@ enum Backend {
     }
 
     static func create(row: SessionRow, projectDir: String, level: DetailLevel, into target: String) throws -> CreateResult {
-        let r = try run(["create"] + selectionArgs(for: row, projectDir: projectDir) + level.flags + ["--into", target, "--json"])
+        let r = try run(["create"] + selectionArgs(for: row, projectDir: projectDir) + level.flags
+                        + ["--into", target.precomposedStringWithCanonicalMapping, "--json"])
         guard r.code == 0, let brace = r.out.firstIndex(of: "{"),
               let data = String(r.out[brace...]).data(using: .utf8) else {
             throw BackendError(message: r.err.isEmpty ? "create failed (exit \(r.code))\n\(r.out)" : r.err.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -170,7 +171,8 @@ func chooseDirectory(title: String, start: String?) -> String? {
     panel.canChooseDirectories = true; panel.canChooseFiles = false
     panel.allowsMultipleSelection = false; panel.canCreateDirectories = true
     if let s = start, !s.isEmpty { panel.directoryURL = URL(fileURLWithPath: s) }
-    return panel.runModal() == .OK ? panel.url?.path : nil
+    // precomposed (NFC): the panel returns decomposed Unicode, Claude Code names project dirs by NFC
+    return panel.runModal() == .OK ? panel.url?.path.precomposedStringWithCanonicalMapping : nil
 }
 
 // MARK: - App

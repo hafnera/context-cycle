@@ -737,6 +737,16 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(list(leveldb._block_entries(block)), [(b"abc", b"X"), (b"abd", b"YZ")])
 
 
+class PathTests(unittest.TestCase):
+    def test_munge_path_normalizes_decomposed_unicode(self):
+        import unicodedata
+        nfc = "/tmp/Vertical Consulting - Verträge"
+        nfd = unicodedata.normalize("NFD", nfc)
+        self.assertNotEqual(nfc, nfd)
+        self.assertEqual(ex.munge_path(nfd), ex.munge_path(nfc))
+        self.assertTrue(ex.munge_path(nfc).endswith("Vertical-Consulting---Vertr-ge"))
+
+
 class CreateSessionTests(unittest.TestCase):
     """`create`: an extract becomes a NEW Claude Code session in another project."""
 

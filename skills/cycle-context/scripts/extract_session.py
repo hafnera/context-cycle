@@ -95,8 +95,13 @@ COMMAND_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
 
 
 def munge_path(path):
-    """Replicate Claude Code's project-dir naming: non-alphanumerics become '-'."""
-    return re.sub(r"[^A-Za-z0-9]", "-", str(Path(path).expanduser().resolve()))
+    """Replicate Claude Code's project-dir naming: non-alphanumerics become '-'.
+    The path is NFC-normalized first: macOS file dialogs and APFS hand out
+    decomposed Unicode ("a" + combining diaeresis), which would turn "ä" into
+    "a-" instead of the single "-" Claude Code writes."""
+    import unicodedata
+    resolved = unicodedata.normalize("NFC", str(Path(path).expanduser().resolve()))
+    return re.sub(r"[^A-Za-z0-9]", "-", resolved)
 
 
 def iter_jsonl(path):
