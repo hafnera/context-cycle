@@ -9,6 +9,7 @@ Everything runs locally (Python 3, stdlib only, no dependencies). The only netwo
 ## What you get
 
 - **`/cycle-context` skill** — import a previous session as condensed context: your messages, the main agent's progress notes and final answer per turn, and every subagent's result (summary + full report, labeled with the subagent's real name). No tool calls, tool results, code edits or thinking. You choose the detail level via a question card. A 25 MB session file becomes a readable transcript of a few hundred KB (or a few dozen KB at lower levels).
+- **Sessions that move between projects** — `create` turns the condensed extract of a session (any source) into a **new, real Claude Code session** in another project directory: your messages become user messages, the agent's notes, answers and subagent reports become assistant messages, with a preface that names the origin. Resume it there with `claude --resume <id>` (or pick "Imported: …" in `/resume`).
 - **`/cycle-checkpoint` skill** — the documentation checkpoint on demand: update all project docs (incl. architecture docs and learnings from mistakes), then stop with a numbered next-steps list and ask you to `/compact`.
 - **Pre-compaction checkpoint hook** (PostToolUse) — at 80% context usage the agent is told to run exactly that checkpoint by itself.
 - **Post-compaction restore hook** (SessionStart, `compact`) — right after a compaction the agent is told to ask you which detail level to restore (with token estimates per level) and to import that from the session file on disk.
@@ -48,6 +49,7 @@ Just describe the session; the agent finds it:
 - "Import the session from yesterday in project X as context"
 - "Load the Codex session where we built the sankey widget"
 - "Import the Claude chat about freelancing without a trade registration"
+- "Create a new session in ~/Coding/ProjectB from the session in ProjectA where we designed the API" (then `cd ~/Coding/ProjectB && claude --resume <id>`)
 - "Use cycle-context on the current session so you know again what this session is about" (great right after a compaction)
 - or explicitly: `/cycle-context` followed by a description
 
@@ -97,9 +99,10 @@ python3 $X list --agent chat --grep "freelanc"     # ordinary claude.ai chats ca
 python3 $X extract <id-prefix> --all-projects     # condensed transcript to stdout
 python3 $X extract --current -o ctx.md            # the running session of this project
 python3 $X extract <id> --final-only --no-subagent-reports   # a lower detail level
+python3 $X create <id> --all-projects --into ~/Coding/ProjectB  # a NEW session in ProjectB from that extract
 ```
 
-Options: `--agent claude|desktop|remote|chat|codex|all`, `--project PATH`, `--all-projects`, `--grep TEXT`, `--current`, `--path FILE`, `--no-subagent-reports`, `--no-subagents`, `--final-only`, `--last N`, `--max-chars N`, `--cloud-origin ID`, `--no-cloud`, `--json`, `-o FILE`. Every extract prints `Imported context: ~Xk tokens ≈ Y% …` on stderr.
+`create` takes the same selection and detail options as `extract` plus `--into DIR` (the target project directory) and prints the new session id with the resume command. Options: `--agent claude|desktop|remote|chat|codex|all`, `--project PATH`, `--all-projects`, `--grep TEXT`, `--current`, `--path FILE`, `--no-subagent-reports`, `--no-subagents`, `--final-only`, `--last N`, `--max-chars N`, `--cloud-origin ID`, `--no-cloud`, `--json`, `-o FILE`. Every extract prints `Imported context: ~Xk tokens ≈ Y% …` on stderr.
 
 ## Hooks and tuning
 
@@ -118,7 +121,7 @@ The checkpoint threshold is measured from the latest main-context usage block in
 python3 -m unittest discover -s tests -v
 ```
 
-Synthetic sessions cover tool calls, progress notes, interjections, rewinds, duplicates, sidechains, Agent-tool subagents incl. a resumed invocation, Workflow runs, background tasks, slash commands, Codex rollouts, a locally continued cloud session (origin search, merge, cache, offline warning), model/window detection from the running session, claude.ai chats (displayed branch, notes, markers) with the LevelDB log/table reader, the Desktop cache decoder (V8 + Snappy) and both hooks. The structural invariants (per-turn order, no noise leaks, identical user counts and monotonic sizes across detail levels) are asserted there and were additionally validated against 20+ MB real sessions.
+Synthetic sessions cover tool calls, progress notes, interjections, rewinds, duplicates, sidechains, Agent-tool subagents incl. a resumed invocation, Workflow runs, background tasks, slash commands, Codex rollouts, a locally continued cloud session (origin search, merge, cache, offline warning), model/window detection from the running session, claude.ai chats (displayed branch, notes, markers) with the LevelDB log/table reader, `create` (alternating entries, uuid chain, round trip through the parser, target project directory), the Desktop cache decoder (V8 + Snappy) and both hooks. The structural invariants (per-turn order, no noise leaks, identical user counts and monotonic sizes across detail levels) are asserted there and were additionally validated against 20+ MB real sessions.
 
 ## Notes and limits
 

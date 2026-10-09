@@ -1,6 +1,6 @@
 ---
 name: cycle-context
-description: Import a previous agent session or chat (Claude Code CLI, Claude Desktop local coding sessions, claude.ai/code remote sessions, ordinary claude.ai chats cached by Claude Desktop on macOS, or Codex CLI) into the current conversation as condensed context — only the user's messages and each turn's final assistant answer, without tool calls, code edits, intermediate steps or thinking. Use when the user wants to continue from, reference, or "load" an earlier session, e.g. "hol den Kontext aus der letzten Session", "import the session where we built X", "what did we discuss yesterday in project Y", "füge die Session von gestern als Kontext hinzu", "lade den Claude-Chat über Freiberuflichkeit als Kontext".
+description: Import a previous agent session or chat (Claude Code CLI, Claude Desktop local coding sessions, claude.ai/code remote sessions, ordinary claude.ai chats cached by Claude Desktop on macOS, or Codex CLI) into the current conversation as condensed context, or create a NEW Claude Code session in another project from that extract — only the user's messages and each turn's final assistant answer, without tool calls, code edits, intermediate steps or thinking. Use when the user wants to continue from, reference, or "load" an earlier session, e.g. "hol den Kontext aus der letzten Session", "import the session where we built X", "what did we discuss yesterday in project Y", "füge die Session von gestern als Kontext hinzu", "lade den Claude-Chat über Freiberuflichkeit als Kontext", "erstelle aus der Session in Projekt A eine neue Session in Projekt B".
 ---
 
 # Session Context Import
@@ -102,6 +102,16 @@ python3 "<skill>/scripts/extract_session.py" extract --current
 ```
 
 This resolves to the most recently written session file of the current project, which is the running session (its jsonl retains the full history even after compaction). Read the output, then give the user a short recap of the session so far: original goal, key decisions, current state, open points. If two sessions of this project run in parallel, verify the extract matches this conversation and fall back to an explicit id if not. The full-extract rule applies here too: no `--last`/`--max-chars` unless the user asked.
+
+### Special case: CREATE a new session in another project from an extract
+
+When the user wants a session of project A to become a **real session in project B** ("erstelle aus der Session X eine neue Session in Projekt B", "move/copy this session into ~/Coding/B"): find the source session as in step 1, ask the detail level as in step 2 (the chosen flags apply), then run
+
+```bash
+python3 "<skill>/scripts/extract_session.py" create <id-prefix> [--all-projects] --into /path/to/projectB [detail flags]
+```
+
+The command writes a new session file into project B's directory under `~/.claude/projects/` (user messages → user entries; the agent's notes, answers and subagent reports → assistant text entries; a preface in the first message names the source) and prints the new session id. Tell the user exactly how to open it: `cd /path/to/projectB && claude --resume <id>` (or `/resume` and pick "Imported: <title>"). You cannot switch the running session to the new one yourself. The target directory must exist; the running session's Claude Code version and model are used for the entries' metadata.
 
 ### 4. Confirm
 

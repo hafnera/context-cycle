@@ -735,3 +735,64 @@ class ChatTests(unittest.TestCase):
                  + v(2) + v(1) + v(2) + b"d" + b"YZ"
                  + (0).to_bytes(4, "little") + (1).to_bytes(4, "little"))   # one restart point
         self.assertEqual(list(leveldb._block_entries(block)), [(b"abc", b"X"), (b"abd", b"YZ")])
+
+
+class CreateSessionTests(unittest.TestCase):
+    """`create`: an extract becomes a NEW Claude Code session in another project."""
+
+    def test_entries_alternate_and_round_trip(self):
+        tmp = Path(tempfile.mkdtemp())
+        src = build_claude_session(tmp)
+        parsed = ex.parse_claude_session(src)
+        entries = ex.build_session_entries(parsed, "/tmp/project-b", "new-sid", version="2.1.0", model="claude-x")
+        self.assertEqual(entries[0]["type"], "custom-title")
+        self.assertTrue(entries[0]["customTitle"].startswith("Imported: "))
+        msgs = entries[1:]
+        self.assertEqual(msgs[0]["type"], "user")
+        self.assertIn("[context-cycle] Condensed history imported", msgs[0]["message"]["content"])
+        self.assertTrue(all(a["type"] != b["type"] for a, b in zip(msgs, msgs[1:])))   # roles alternate
+        self.assertEqual([m["parentUuid"] for m in msgs], [None] + [m["uuid"] for m in msgs[:-1]])
+        self.assertTrue(all(m["sessionId"] == "new-sid" and m["cwd"] == "/tmp/project-b" for m in msgs))
+        stamps = [m["timestamp"] for m in msgs]
+        self.assertEqual(stamps, sorted(stamps))
+        self.assertTrue(all(b["type"] == "text" for m in msgs if m["type"] == "assistant"
+                            for b in m["message"]["content"]))
+        text = "\n".join(json.dumps(m["message"], ensure_ascii=False) for m in msgs)
+        for u in (t["text"] for t in parsed["turns"] if t["role"] == "user"):
+            self.assertIn(u, text)
+        for a in (t["text"] for t in parsed["turns"] if t["role"] == "assistant"):
+            self.assertIn(a[:40], text)
+        self.assertIn("Subagent «", text)                       # subagent results carried over
+        self.assertNotIn("tool_use", text)
+        # the new file reads back as a normal session
+        new = tmp / "new-sid.jsonl"
+        new.write_text("".join(json.dumps(e) + "\n" for e in entries))
+        back = ex.parse_claude_session(new, cloud="off")
+        self.assertEqual(back["title"], entries[0]["customTitle"])
+        self.assertGreaterEqual(back["user_messages"], parsed["user_messages"])
+        self.assertEqual(sum(1 for t in back["turns"] if t["role"] == "assistant"), len([m for m in msgs if m["type"] == "assistant"]))
+
+    def test_cmd_create_writes_into_target_project(self):
+        tmp = Path(tempfile.mkdtemp())
+        src = build_claude_session(tmp)
+        target = tmp / "project-b"; target.mkdir()
+        saved = (ex.CLAUDE_PROJECTS_DIR, os.environ.get("CLAUDE_CODE_SESSION_ID"))
+        ex.CLAUDE_PROJECTS_DIR = tmp / ".claude" / "projects"
+        os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        out = io.StringIO()
+        try:
+            with redirect_stdout(out), redirect_stderr(io.StringIO()):
+                ex.main.__globals__["sys"].argv = ["x", "create", "--path", str(src), "--into", str(target),
+                                                   "--final-only", "--json"]
+                ex.main()
+        finally:
+            ex.CLAUDE_PROJECTS_DIR = saved[0]
+            if saved[1]:
+                os.environ["CLAUDE_CODE_SESSION_ID"] = saved[1]
+        info = json.loads(out.getvalue()[out.getvalue().index("{"):])
+        path = Path(info["path"])
+        self.assertEqual(path.parent, tmp / ".claude" / "projects" / ex.munge_path(target))
+        self.assertTrue(path.is_file())
+        self.assertIn("claude --resume " + info["session_id"], out.getvalue())
+        back = ex.parse_claude_session(path, cloud="off")
+        self.assertIn("detail level Final answers only", back["turns"][0]["text"])

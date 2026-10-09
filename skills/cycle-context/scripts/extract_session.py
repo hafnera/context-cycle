@@ -1867,7 +1867,8 @@ def render_markdown(parsed, max_chars=0):
     return "\n".join(lines)
 
 
-def cmd_extract(args):
+def resolve_targets(args):
+    """The (agent, ref) pairs an extract/create command addresses."""
     targets = []
     if args.current:
         # The currently running session: CLAUDE_CODE_SESSION_ID when set, else
@@ -1936,7 +1937,11 @@ def cmd_extract(args):
                       file=sys.stderr)
                 sys.exit(1)
             targets.append(match)
+    return targets
 
+
+def parse_targets(args, targets):
+    """Parse the targets at the detail level the flags describe."""
     outputs = []
     for agent, path in targets:
         parsed = parse_any(agent, path, all_text=not args.final_only,
@@ -1963,7 +1968,11 @@ def cmd_extract(args):
                 parsed["omitted_users"] = len(user_idx) - args.last
                 parsed["turns"] = parsed["turns"][cut:]
         outputs.append(parsed)
+    return outputs
 
+
+def cmd_extract(args):
+    outputs = parse_targets(args, resolve_targets(args))
     if args.json:
         result = json.dumps(outputs if len(outputs) > 1 else outputs[0],
                             indent=2, ensure_ascii=False, default=str)
@@ -1977,6 +1986,123 @@ def cmd_extract(args):
     else:
         print(result)
     print(import_summary(len(result), args.project), file=sys.stderr)
+
+
+def transcript_version(path):
+    """The Claude Code version that wrote a transcript (tail read)."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(max(0, Path(path).stat().st_size - 65_536))
+            tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in reversed(tail.splitlines()):
+        m = re.search(r'"version":\s*"(\d+\.\d+\.\d+)"', line)
+        if m:
+            return m.group(1)
+    return None
+
+
+def build_session_entries(parsed, cwd, session_id, version="2.1.0", model=None):
+    """Turn a condensed transcript into the entries of a NEW Claude Code
+    session (jsonl lines): the user's messages become user entries, the
+    agent's notes, answers and subagent reports become assistant entries with
+    text blocks, chained by uuid/parentUuid. Commands and event markers are
+    left out; a preface in the first message says where the history comes
+    from. Consecutive messages of one role are merged so roles alternate."""
+    import uuid as _uuid
+    agent_name = {"claude": "Claude Code", "codex": "Codex CLI", "desktop": "Claude Desktop",
+                  "remote": "claude.ai/code cloud", "chat": "claude.ai chat"}.get(parsed["agent"], parsed["agent"])
+    preface = (f"[context-cycle] Condensed history imported from the {agent_name} session "
+               f"`{parsed['session_id']}` — \"{parsed.get('title') or ''}\" "
+               f"({fmt_ts(parsed.get('first_ts'))} → {fmt_ts(parsed.get('last_ts'))}, {parsed.get('cwd') or '?'}; "
+               f"detail level {parsed.get('detail_level') or 'Full'}). The messages below are that session's "
+               f"user messages and the agent's answers; tool calls, tool results and thinking were omitted.")
+    items = []  # (role, text, ts)
+    for t in parsed["turns"]:
+        r = t["role"]
+        if r in ("user", "user_interjection"):
+            items.append(("user", t["text"], t.get("ts")))
+        elif r == "summary":
+            items.append(("user", "Carried-over summary of an earlier conversation:\n\n" + t["text"], t.get("ts")))
+        elif r in ("assistant_progress", "assistant"):
+            items.append(("assistant", t["text"], t.get("ts")))
+        elif r == "subagent":
+            parts = [f"🧭 Subagent «{t['name']}» reported:"]
+            if t.get("summary"):
+                parts.append(t["summary"])
+            if t.get("report"):
+                parts.append(f"Full report from subagent «{t['name']}»:\n\n" + embed(t["report"]))
+            elif t.get("report_omitted"):
+                parts.append("*(full report omitted at this detail level)*")
+            items.append(("assistant", "\n\n".join(parts), t.get("ts")))
+    merged = []
+    for role, text, ts in items:
+        if merged and merged[-1][0] == role:
+            merged[-1][1].append(text)
+        else:
+            merged.append([role, [text], ts])
+    if not merged or merged[0][0] != "user":
+        merged.insert(0, ["user", [], None])
+    merged[0][1].insert(0, preface)
+    entries = [{"type": "custom-title", "sessionId": session_id,
+                "customTitle": f"Imported: {parsed.get('title') or parsed['session_id']}"}]
+    parent, last_ts = None, None
+    now = datetime.now(timezone.utc)
+    for role, texts, ts in merged:
+        if ts is None or (last_ts and ts <= last_ts):
+            ts = (last_ts or now) + __import__("datetime").timedelta(milliseconds=1)
+        last_ts = ts
+        uid = str(_uuid.uuid4())
+        entry = {"parentUuid": parent, "isSidechain": False, "type": role, "uuid": uid,
+                 "timestamp": ts.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+                 "sessionId": session_id, "cwd": cwd, "version": version, "userType": "external"}
+        if role == "user":
+            entry["message"] = {"role": "user", "content": "\n\n".join(texts)}
+        else:
+            entry["message"] = {"id": "msg_imported_" + uid.replace("-", "")[:20], "type": "message",
+                                "role": "assistant", "model": model or "imported",
+                                "content": [{"type": "text", "text": x} for x in texts],
+                                "stop_reason": "end_turn", "stop_sequence": None,
+                                "usage": {"input_tokens": 0, "output_tokens": 0,
+                                          "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}
+        entries.append(entry)
+        parent = uid
+    return entries
+
+
+def cmd_create(args):
+    """Create a NEW Claude Code session in another project from an extract."""
+    import uuid as _uuid
+    into = Path(args.into).expanduser().resolve()
+    if not into.is_dir():
+        print(f"error: --into must be an existing project directory: {into}", file=sys.stderr)
+        sys.exit(2)
+    outputs = parse_targets(args, resolve_targets(args))
+    running = running_session_transcript(args.project)
+    version = (transcript_version(running) if running else None) or "2.1.0"
+    model = (transcript_model_and_usage(running)[0] if running else None)
+    project_dir = CLAUDE_PROJECTS_DIR / munge_path(into)
+    project_dir.mkdir(parents=True, exist_ok=True)
+    created = []
+    for parsed in outputs:
+        sid = str(_uuid.uuid4())
+        entries = build_session_entries(parsed, str(into), sid, version=version,
+                                        model=parsed.get("model") or model)
+        path = project_dir / f"{sid}.jsonl"
+        path.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries), encoding="utf-8")
+        chars = sum(len(json.dumps(e.get("message", {}), ensure_ascii=False)) for e in entries)
+        n_user = sum(1 for e in entries if e.get("type") == "user")
+        n_asst = sum(1 for e in entries if e.get("type") == "assistant")
+        print(f"Created session {sid} in project {into}\n"
+              f"  from: {parsed['agent']} session {parsed['session_id']} — {parsed.get('title') or ''}\n"
+              f"  detail level: {parsed.get('detail_level') or 'Full'}; {n_user} user + {n_asst} assistant messages\n"
+              f"  file: {path}\n"
+              f"  resume it there:  cd \"{into}\" && claude --resume {sid}")
+        print(import_summary(chars, args.project), file=sys.stderr)
+        created.append({"session_id": sid, "path": str(path), "project": str(into)})
+    if args.json:
+        print(json.dumps(created if len(created) > 1 else created[0], indent=2))
 
 
 def main():
@@ -2001,32 +2127,40 @@ def main():
                         help="also list sessions without user messages")
     p_list.set_defaults(func=cmd_list)
 
-    p_ext = sub.add_parser("extract", parents=[common],
+    sel = argparse.ArgumentParser(add_help=False)
+    sel.add_argument("session_ids", nargs="*", help="session id prefix(es)")
+    sel.add_argument("--path", help="extract this jsonl file directly")
+    sel.add_argument("--current", action="store_true",
+                     help="the currently running session of this project "
+                          "(CLAUDE_CODE_SESSION_ID, else the most recently written session file)")
+    sel.add_argument("--no-subagent-reports", action="store_true",
+                     help="keep subagent summaries but drop their full reports")
+    sel.add_argument("--no-subagents", action="store_true", help="drop subagent blocks entirely")
+    sel.add_argument("--final-only", action="store_true",
+                     help="only each turn's final answer (default: also the main agent's "
+                          "progress notes between tool calls)")
+    sel.add_argument("--max-chars", type=int, default=0,
+                     help="truncate each message to N chars (0 = no truncation)")
+    sel.add_argument("--last", type=int, default=0,
+                     help="only keep the last N user messages and their answers")
+    sel.add_argument("--cloud-origin", metavar="ID",
+                     help="for a locally continued cloud session: the original cloud session "
+                          "(session_… or cse_…) if it cannot be identified automatically")
+    sel.add_argument("--no-cloud", action="store_true",
+                     help="never contact the cloud API (a continued cloud session is then "
+                          "extracted from the local replay only, without its subagent reports)")
+
+    p_ext = sub.add_parser("extract", parents=[common, sel],
                            help="extract condensed transcript of one or more sessions")
-    p_ext.add_argument("session_ids", nargs="*", help="session id prefix(es)")
-    p_ext.add_argument("--path", help="extract this jsonl file directly")
-    p_ext.add_argument("--current", action="store_true",
-                       help="extract the currently running session of this project "
-                            "(most recently written session file)")
-    p_ext.add_argument("--no-subagent-reports", action="store_true",
-                       help="keep subagent summaries but drop their full reports")
-    p_ext.add_argument("--no-subagents", action="store_true",
-                       help="drop subagent blocks entirely")
-    p_ext.add_argument("--final-only", action="store_true",
-                       help="only each turn's final answer (default: also the main agent's "
-                            "progress notes between tool calls)")
-    p_ext.add_argument("--max-chars", type=int, default=0,
-                       help="truncate each message to N chars (0 = no truncation)")
-    p_ext.add_argument("--last", type=int, default=0,
-                       help="only keep the last N user messages and their answers")
     p_ext.add_argument("-o", "--out", help="write result to file instead of stdout")
-    p_ext.add_argument("--cloud-origin", metavar="ID",
-                       help="for a locally continued cloud session: the original cloud session "
-                            "(session_… or cse_…) if it cannot be identified automatically")
-    p_ext.add_argument("--no-cloud", action="store_true",
-                       help="never contact the cloud API (a continued cloud session is then "
-                            "extracted from the local replay only, without its subagent reports)")
     p_ext.set_defaults(func=cmd_extract)
+
+    p_new = sub.add_parser("create", parents=[common, sel],
+                           help="create a NEW Claude Code session in another project from the "
+                                "condensed extract of a session (resume it there with claude --resume)")
+    p_new.add_argument("--into", required=True, metavar="DIR",
+                       help="the project directory the new session belongs to")
+    p_new.set_defaults(func=cmd_create)
 
     args = parser.parse_args()
     args.func(args)
