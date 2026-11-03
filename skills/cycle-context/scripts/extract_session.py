@@ -1275,8 +1275,7 @@ def desktop_idb_records():
             if not blob.is_file() or blob.stat().st_size < 200:
                 continue
             try:
-                head = blob.open("rb").read(64)
-                if b"conversationUuid" not in head and head[:3] != b"\xff\x11\x02":
+                if blob.open("rb").read(1) != b"\xff":   # every IndexedDB value starts with a V8 header
                     continue
                 rec = load_idb_blob(blob.read_bytes())
             except Exception:
@@ -1344,13 +1343,66 @@ def remote_sessions():
     return [(r, CacheRef(r, "remote")) for r in _newest_per_conversation(recs)]
 
 
+def desktop_query_cache():
+    """Claude Desktop persists its data-fetching cache (react-query) in the
+    same IndexedDB: a record {clientState: {queries: [{queryKey, state: {data}}]}}.
+    Returns (titles, transcripts): conversation uuid -> list metadata (name,
+    updated_at, model, …) from the "chat_conversation_list" queries, and
+    uuid -> transcript dict (messages …) from the "hub_transcript" queries."""
+    titles, transcripts = {}, {}
+    for rec in desktop_idb_records():
+        queries = ((rec.get("clientState") or {}).get("queries")) if isinstance(rec.get("clientState"), dict) else None
+        for q in queries or []:
+            key = q.get("queryKey") if isinstance(q, dict) else None
+            data = ((q.get("state") or {}).get("data")) if isinstance(q, dict) else None
+            if not isinstance(key, list) or not key:
+                continue
+            if key[0] == "chat_conversation_list" and isinstance(data, dict):
+                for page in data.get("pages") or [data]:
+                    items = page.get("data") if isinstance(page, dict) else None
+                    for it in items or []:
+                        if isinstance(it, dict) and it.get("uuid"):
+                            prev = titles.get(it["uuid"])
+                            if not prev or (it.get("updated_at") or "") >= (prev.get("updated_at") or ""):
+                                titles[it["uuid"]] = it
+            elif key[0] == "hub_transcript" and isinstance(data, dict) and data.get("messages"):
+                uuid = next((k.get("uuid") for k in key[1:] if isinstance(k, dict) and k.get("uuid")), None)
+                if uuid:
+                    transcripts[uuid] = data
+    return titles, transcripts
+
+
 def desktop_chats():
-    """Claude Desktop's cache of ordinary claude.ai CHATS (product "chat"):
-    the conversation tree with all messages, as rendered in the app. Only
-    chats opened in Desktop are cached. Returns [(record, CacheRef)] newest first."""
+    """Claude Desktop's cache of ordinary claude.ai CHATS: the conversation
+    with all messages, as rendered in the app — either the older records
+    (product "chat", tree.chat_messages, title inside) or the current "hub"
+    records (product "hub", tree.kind "hub_transcript", tree.messages, no
+    title) and transcripts from the app's query cache; titles, model and
+    timestamps come from the cached conversation list. Only chats opened in
+    Desktop are cached. Returns [(record, CacheRef)] newest first."""
+    titles, transcripts = desktop_query_cache()
     recs = [r for r in desktop_idb_records()
-            if r.get("product") == "chat" and (r.get("tree") or {}).get("chat_messages")]
-    return [(r, CacheRef(r, "chat")) for r in _newest_per_conversation(recs)]
+            if r.get("product") in ("chat", "hub") and isinstance(r.get("tree"), dict)
+            and (r["tree"].get("chat_messages") or r["tree"].get("messages"))]
+    known = {str(r.get("conversationUuid")) for r in recs}
+    for uuid, data in transcripts.items():
+        if uuid not in known:
+            meta = titles.get(uuid) or {}
+            ts = parse_ts(meta.get("updated_at"))
+            recs.append({"conversationUuid": uuid, "product": "hub", "fetchedAt": data.get("vouchedAt") or 0,
+                         "conversationUpdatedAt": ts.timestamp() * 1000 if ts else (data.get("vouchedAt") or 0),
+                         "tree": {"kind": "hub_transcript", "messages": data.get("messages")}})
+    out = []
+    for r in _newest_per_conversation(recs):
+        meta = titles.get(str(r.get("conversationUuid"))) or {}
+        if meta:
+            r = dict(r); r["tree"] = dict(r["tree"])
+            for src, dst in (("name", "name"), ("model", "model"), ("created_at", "created_at"),
+                             ("updated_at", "updated_at"), ("summary", "summary")):
+                if meta.get(src) and not r["tree"].get(dst):
+                    r["tree"][dst] = meta[src]
+        out.append((r, CacheRef(r, "chat")))
+    return out
 
 
 def chat_tool_deliverable(block):
@@ -1374,9 +1426,9 @@ def chat_tool_deliverable(block):
                     head += f"\n{key.capitalize()}: {v[key]}"
             parts.append(head + "\n\n" + embed(str(v.get("body") or "")).strip())
         return "\n\n".join(parts) or None
-    low = name.lower()
+    low = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")   # "Gmail: Send message" -> "gmail_send_message"
     if (any(k in low for k in ("send_message", "send_email", "create_draft", "update_draft"))
-            or low.endswith((":reply", ":forward"))) and (inp.get("body") or inp.get("subject")):
+            or low.endswith(("_reply", "_forward"))) and (inp.get("body") or inp.get("subject")):
         action = "Sent" if "send" in low else "Draft"
         head = f"✉ **{action} email via {name.split(':')[0]}**"
         for key in ("to", "cc", "subject"):
@@ -1402,7 +1454,7 @@ def parse_chat_record(rec, all_text=True):
     branch (ancestors of the current leaf) is used; edited/regenerated
     branches are counted and omitted."""
     tree = rec.get("tree") or {}
-    msgs = [m for m in (tree.get("chat_messages") or []) if isinstance(m, dict)]
+    msgs = [m for m in (tree.get("chat_messages") or tree.get("messages") or []) if isinstance(m, dict)]
     by = {m.get("uuid"): m for m in msgs}
     parents = tree.get("parentByChildUuid") or {}
     chain, seen = [], set()

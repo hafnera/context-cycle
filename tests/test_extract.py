@@ -728,6 +728,53 @@ class ChatTests(unittest.TestCase):
             ex.DESKTOP_IDB_BLOB_DIR, ex.DESKTOP_IDB_LEVELDB_DIR = saved
             ex._idb_cache["records"] = None
 
+    def test_hub_format_with_titles_from_the_query_cache(self):
+        """Claude Desktop 4.42+: chats are "hub_transcript" records without a
+        title; titles come from the cached conversation list, and transcripts
+        that exist only in the query cache are listed too."""
+        enc = DesktopCacheTests._v8
+        tmp = Path(tempfile.mkdtemp()); ldb = tmp / "leveldb"; ldb.mkdir(); blobdir = tmp / "blob"; blobdir.mkdir()
+        old = self.chat_record()
+        hub_msgs = [m for m in old["tree"]["chat_messages"] if m["uuid"] != "a2"]   # linear displayed path
+        hub = {"conversationUuid": "hub-uuid-1", "product": "hub", "fetchedAt": 1790000000000,
+               "conversationUpdatedAt": 1790000000000, "messageCount": 4,
+               "tree": {"kind": "hub_transcript", "v": 2, "messages": hub_msgs, "treeSize": 4}}
+        listing = {"timestamp": 1790000000000, "clientState": {"mutations": [], "queries": [
+            {"queryKey": ["chat_conversation_list", {"orgUuid": "o"}, "infinite", {"limit": 30}],
+             "state": {"data": {"pages": [{"has_more": False, "data": [
+                 {"uuid": "hub-uuid-1", "name": "Hub chat title", "model": "claude-opus-5-5",
+                  "created_at": "2026-11-01T10:00:00Z", "updated_at": "2026-11-03T12:00:00Z"},
+                 {"uuid": "hub-uuid-2", "name": "Only in the query cache", "model": "claude-opus-5-5",
+                  "created_at": "2026-11-02T10:00:00Z", "updated_at": "2026-11-02T11:00:00Z"}]}]}}},
+            {"queryKey": ["hub_transcript", {"orgUuid": "o"}, {"uuid": "hub-uuid-2"}],
+             "state": {"data": {"v": 2, "messages": hub_msgs[:2], "treeSize": 2, "vouchedAt": 1790000001000}}},
+        ]}}
+        (blobdir / "1").write_bytes(enc(None, hub))
+        (blobdir / "2").write_bytes(enc(None, listing))
+        saved = (ex.DESKTOP_IDB_BLOB_DIR, ex.DESKTOP_IDB_LEVELDB_DIR)
+        ex.DESKTOP_IDB_BLOB_DIR, ex.DESKTOP_IDB_LEVELDB_DIR = blobdir, ldb
+        ex._idb_cache["records"] = None
+        try:
+            chats = ex.desktop_chats()
+            by = {ref.id: rec for rec, ref in chats}
+            self.assertEqual(sorted(by), ["hub-uuid-1", "hub-uuid-2"])
+            parsed = ex.parse_chat_record(by["hub-uuid-1"])
+            self.assertEqual(parsed["title"], "Hub chat title")
+            self.assertEqual(parsed["model"], "claude-opus-5-5")
+            self.assertEqual([t["role"] for t in parsed["turns"]],
+                             ["user", "assistant_progress", "assistant", "user", "assistant_progress", "assistant"])
+            self.assertEqual(ex.fmt_ts(parsed["last_ts"])[:10], "2026-11-03")
+            parsed2 = ex.parse_chat_record(by["hub-uuid-2"])
+            self.assertEqual(parsed2["title"], "Only in the query cache")
+            self.assertEqual(parsed2["user_messages"], 1)
+            # deliverable detection with the new tool naming
+            blk = {"type": "tool_use", "name": "Gmail: Send message",
+                   "input": {"to": "a@b.c", "subject": "Hi", "body": "Text"}}
+            self.assertIn("✉ **Sent email via Gmail", ex.chat_tool_deliverable(blk))
+        finally:
+            ex.DESKTOP_IDB_BLOB_DIR, ex.DESKTOP_IDB_LEVELDB_DIR = saved
+            ex._idb_cache["records"] = None
+
     def test_leveldb_table_block_entries(self):
         import leveldb
         v = self._varint
