@@ -113,7 +113,7 @@ python3 $X extract <id> --final-only --no-subagent-reports   # a lower detail le
 python3 $X create <id> --all-projects --into ~/Coding/ProjectB  # a NEW session in ProjectB from that extract
 ```
 
-`create` takes the same selection and detail options as `extract` plus `--into DIR` (the target project directory) and prints the new session id with the resume command. Options: `--agent claude|desktop|remote|chat|codex|all`, `--project PATH`, `--all-projects`, `--grep TEXT`, `--current`, `--path FILE`, `--no-subagent-reports`, `--no-subagents`, `--final-only`, `--last N`, `--max-chars N`, `--cloud-origin ID`, `--no-cloud`, `--json`, `-o FILE`. Every extract prints `Imported context: ~Xk tokens (measured|estimated) ≈ Y% …` on stderr.
+`create` takes the same selection and detail options as `extract` plus `--into DIR` (the target project directory) and prints the new session id with the resume command, the import size and what Claude Code will report after the first message: the import plus the target project's **baseline** (system prompt, tools, CLAUDE.md, memory — measured from the first request of the project's other sessions, typically 50–70k). Options: `--agent claude|desktop|remote|chat|codex|all`, `--project PATH`, `--all-projects`, `--grep TEXT`, `--current`, `--path FILE`, `--no-subagent-reports`, `--no-subagents`, `--final-only`, `--last N`, `--max-chars N`, `--cloud-origin ID`, `--no-cloud`, `--json`, `-o FILE`. Every extract prints `Imported context: ~Xk tokens (measured|estimated) ≈ Y% …` on stderr.
 
 ## Hooks and tuning
 

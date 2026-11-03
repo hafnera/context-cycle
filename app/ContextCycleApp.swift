@@ -61,6 +61,8 @@ struct CreateResult: Decodable {
     let session_id: String
     let path: String
     let project: String
+    let import_tokens: Int?
+    let baseline_tokens: Int?
 }
 
 struct BackendError: LocalizedError {
@@ -349,6 +351,14 @@ struct CopySheet: View {
         Text(cmd).font(.system(.body, design: .monospaced)).textSelection(.enabled)
             .padding(8).background(Color(nsColor: .textBackgroundColor)).cornerRadius(6)
         Text("Or start Claude Code in \(res.project) and pick “Imported: …” in /resume.").font(.callout).foregroundStyle(.secondary)
+        if let imp = res.import_tokens, let base = res.baseline_tokens {
+            Text(String(format: "After the first message Claude Code will report roughly %.0fk context: the import (~%.0fk) plus this project's baseline of ~%.0fk (system prompt, tools, CLAUDE.md, memory).",
+                        Double(imp + base) / 1000, Double(imp) / 1000, Double(base) / 1000))
+                .font(.callout).foregroundStyle(.secondary)
+        } else if let imp = res.import_tokens {
+            Text(String(format: "Import size: ~%.0fk tokens; Claude Code adds the project's own baseline (system prompt, tools, CLAUDE.md) on top.", Double(imp) / 1000))
+                .font(.callout).foregroundStyle(.secondary)
+        }
         HStack {
             Button("Copy command") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(cmd, forType: .string) }
             Button("Reveal session file") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: res.path)]) }

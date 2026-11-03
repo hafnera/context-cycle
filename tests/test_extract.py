@@ -849,6 +849,26 @@ class CreateSessionTests(unittest.TestCase):
         self.assertGreaterEqual(back["user_messages"], parsed["user_messages"])
         self.assertEqual(sum(1 for t in back["turns"] if t["role"] == "assistant"), len([m for m in msgs if m["type"] == "assistant"]))
 
+    def test_project_baseline_from_first_requests(self):
+        tmp = Path(tempfile.mkdtemp()); target = tmp / "proj"; target.mkdir()
+        saved = ex.CLAUDE_PROJECTS_DIR; ex.CLAUDE_PROJECTS_DIR = tmp / "projects"
+        pdir = ex.CLAUDE_PROJECTS_DIR / ex.munge_path(target); pdir.mkdir(parents=True)
+        def session(name, first, imported=False):
+            lines = []
+            if imported:
+                lines.append(json.dumps({"type": "custom-title", "customTitle": "Imported: x"}))
+            lines.append(json.dumps({"type": "assistant", "requestId": "req_1", "message": {"usage": {
+                "input_tokens": 10, "cache_read_input_tokens": first - 10, "cache_creation_input_tokens": 0}}}))
+            lines.append(json.dumps({"type": "assistant", "requestId": "req_2", "message": {"usage": {
+                "input_tokens": 10, "cache_read_input_tokens": first + 50_000, "cache_creation_input_tokens": 0}}}))
+            (pdir / f"{name}.jsonl").write_text("\n".join(lines) + "\n")
+        try:
+            self.assertIsNone(ex.project_baseline_tokens(target))
+            session("a", 60_000); session("b", 70_000); session("c", 300_000, imported=True)  # import ignored
+            self.assertEqual(ex.project_baseline_tokens(target), 65_000)                       # median of first requests
+        finally:
+            ex.CLAUDE_PROJECTS_DIR = saved
+
     def test_cmd_create_writes_into_target_project(self):
         tmp = Path(tempfile.mkdtemp())
         src = build_claude_session(tmp)

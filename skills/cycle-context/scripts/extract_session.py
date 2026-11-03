@@ -2171,6 +2171,36 @@ def build_session_entries(parsed, cwd, session_id, version="2.1.0", model=None):
     return entries
 
 
+def project_baseline_tokens(project_dir):
+    """What a fresh session in this project costs before any conversation:
+    system prompt, tool definitions, CLAUDE.md, memory … — the context Claude
+    Code reports on the FIRST request of the project's sessions (median over
+    sessions that did not start from an import). None when unknown."""
+    import statistics
+    project = CLAUDE_PROJECTS_DIR / munge_path(project_dir)
+    firsts = []
+    for f in project.glob("*.jsonl"):
+        try:
+            with open(f, "rb") as fh:
+                head = fh.read(400_000).decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        if "msg_imported_" in head or '"customTitle": "Imported:' in head:
+            continue
+        for line in head.splitlines():
+            if '"requestId"' not in line or '"usage"' not in line:
+                continue
+            try:
+                u = (json.loads(line).get("message") or {}).get("usage") or {}
+            except (json.JSONDecodeError, AttributeError):
+                continue
+            if "input_tokens" in u:
+                firsts.append(u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
+                              + u.get("cache_creation_input_tokens", 0))
+                break
+    return int(statistics.median(firsts)) if firsts else None
+
+
 def cmd_create(args):
     """Create a NEW Claude Code session in another project from an extract."""
     import uuid as _uuid
@@ -2201,8 +2231,18 @@ def cmd_create(args):
               f"  detail level: {parsed.get('detail_level') or 'Full'}; {n_user} user + {n_asst} assistant messages\n"
               f"  file: {path}\n"
               f"  resume it there:  cd \"{into}\" && claude --resume {sid}")
-        print(import_summary(texts, args.project), file=sys.stderr)
-        created.append({"session_id": sid, "path": str(path), "project": str(into)})
+        summary = import_summary(texts, args.project)
+        print(summary, file=sys.stderr)
+        m = re.search(r"~([\d.]+)k tokens", summary)
+        import_tokens = int(float(m.group(1)) * 1000) if m else None
+        baseline = project_baseline_tokens(into)
+        if import_tokens and baseline:
+            print(f"  after the first message Claude Code will report roughly "
+                  f"{(import_tokens + baseline) / 1000:.0f}k context: the import (~{import_tokens / 1000:.0f}k) "
+                  f"plus this project's baseline of ~{baseline / 1000:.0f}k (system prompt, tools, "
+                  f"CLAUDE.md, memory — measured from its other sessions)")
+        created.append({"session_id": sid, "path": str(path), "project": str(into),
+                        "import_tokens": import_tokens, "baseline_tokens": baseline})
     if args.json:
         print(json.dumps(created if len(created) > 1 else created[0], indent=2))
 
