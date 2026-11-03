@@ -141,3 +141,4 @@ Synthetic sessions cover tool calls, progress notes, interjections, rewinds, dup
 - Cloud sessions need the CLI login token (macOS Keychain or `~/.claude/.credentials.json`); offline, Desktop's cache holds only the last ~2.7 MB per session.
 - Workflow results in task notifications are truncated by Claude Code at ~8k chars; the extract says so and relies on the per-agent reports, which are complete.
 - Secrets pasted into a session are part of its transcript and therefore of the extract.
+- Artifacts created in Claude Desktop chats are Claude Docs documents; the local cache holds only their name and link, so the extract carries a `📄 Artifact «name»: link` marker and an agent can fetch the content through the Claude Docs connector on request.

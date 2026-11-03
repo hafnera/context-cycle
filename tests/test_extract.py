@@ -771,6 +771,10 @@ class ChatTests(unittest.TestCase):
             blk = {"type": "tool_use", "name": "Gmail: Send message",
                    "input": {"to": "a@b.c", "subject": "Hi", "body": "Text"}}
             self.assertIn("✉ **Sent email via Gmail", ex.chat_tool_deliverable(blk))
+            art = {"type": "tool_use", "name": "Artifact", "input": {},
+                   "artifact_page": {"url": "https://claude.ai/code/artifact/abc", "name": "Lebenslauf", "kind": "publish"}}
+            d = ex.chat_tool_deliverable(art)
+            self.assertIn("📄 **Artifact «Lebenslauf»**", d); self.assertIn("https://claude.ai/code/artifact/abc", d)
         finally:
             ex.DESKTOP_IDB_BLOB_DIR, ex.DESKTOP_IDB_LEVELDB_DIR = saved
             ex._idb_cache["records"] = None

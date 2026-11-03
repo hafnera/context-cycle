@@ -1419,6 +1419,13 @@ def chat_tool_deliverable(block):
     Other tool calls are dropped like tool traffic."""
     name = str(block.get("name") or "")
     inp = block.get("input") if isinstance(block.get("input"), dict) else {}
+    page = block.get("artifact_page") if isinstance(block.get("artifact_page"), dict) else None
+    if page and page.get("url"):
+        # Claude Desktop (hub) chats: a published artifact / Claude Doc — only name
+        # and link are cached locally, the content lives on claude.ai
+        return (f"📄 **Artifact «{page.get('name') or 'untitled'}»** ({page.get('kind') or 'published'}): "
+                f"{page['url']}  \n*(a Claude Doc — its content is not cached locally; an agent can read it "
+                f"through the Claude Docs connector, doc id = the id at the end of the link)*")
     if not inp:
         return None
     if name == "message_compose_v1":
