@@ -3,6 +3,7 @@
 A Claude Code **plugin** that makes sure long agent sessions never lose knowledge to context compaction — and lets you pull any earlier session (Claude Code CLI, Claude Desktop, claude.ai/code cloud sessions, ordinary claude.ai chats, Codex CLI) into the current conversation as clean, condensed context.
 
 > 📖 **[The Context Cycle](docs/context-cycle.md)** — how the pieces close the loop, with diagrams, design rationale and limitations.
+> 🗒 **[Changelog](CHANGELOG.md)** — what changed in which version.
 
 Everything runs locally (Python 3, stdlib only, no dependencies). The only network access is the optional read of your own claude.ai/code cloud sessions through the Anthropic API, using the token of your existing Claude Code login.
 
@@ -141,4 +142,5 @@ Synthetic sessions cover tool calls, progress notes, interjections, rewinds, dup
 - Cloud sessions need the CLI login token (macOS Keychain or `~/.claude/.credentials.json`); offline, Desktop's cache holds only the last ~2.7 MB per session.
 - Workflow results in task notifications are truncated by Claude Code at ~8k chars; the extract says so and relies on the per-agent reports, which are complete.
 - Secrets pasted into a session are part of its transcript and therefore of the extract.
+- Project paths are NFC-normalized before they are matched against `~/.claude/projects/` (macOS file dialogs hand out decomposed Unicode).
 - Artifacts created in Claude Desktop chats are Claude Docs documents; the local cache holds only their name and link, so the extract carries a `📄 Artifact «name»: link` marker and an agent can fetch the content through the Claude Docs connector on request.
