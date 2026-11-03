@@ -817,37 +817,51 @@ class TokenEstimateTests(unittest.TestCase):
 class CreateSessionTests(unittest.TestCase):
     """`create`: an extract becomes a NEW Claude Code session in another project."""
 
-    def test_entries_alternate_and_round_trip(self):
+    def test_native_structures_and_round_trip(self):
         tmp = Path(tempfile.mkdtemp())
         src = build_claude_session(tmp)
         parsed = ex.parse_claude_session(src)
-        entries = ex.build_session_entries(parsed, "/tmp/project-b", "new-sid", version="2.1.0", model="claude-x")
+        entries, files = ex.build_session(parsed, "/tmp/project-b", "new-sid", version="2.1.0", model="claude-x")
         self.assertEqual(entries[0]["type"], "custom-title")
         self.assertTrue(entries[0]["customTitle"].startswith("Imported: "))
         msgs = entries[1:]
         self.assertEqual(msgs[0]["type"], "user")
         self.assertIn("[context-cycle] Condensed history imported", msgs[0]["message"]["content"])
-        self.assertTrue(all(a["type"] != b["type"] for a, b in zip(msgs, msgs[1:])))   # roles alternate
         self.assertEqual([m["parentUuid"] for m in msgs], [None] + [m["uuid"] for m in msgs[:-1]])
         self.assertTrue(all(m["sessionId"] == "new-sid" and m["cwd"] == "/tmp/project-b" for m in msgs))
         stamps = [m["timestamp"] for m in msgs]
         self.assertEqual(stamps, sorted(stamps))
-        self.assertTrue(all(b["type"] == "text" for m in msgs if m["type"] == "assistant"
-                            for b in m["message"]["content"]))
-        text = "\n".join(json.dumps(m["message"], ensure_ascii=False) for m in msgs)
-        for u in (t["text"] for t in parsed["turns"] if t["role"] == "user"):
-            self.assertIn(u, text)
-        for a in (t["text"] for t in parsed["turns"] if t["role"] == "assistant"):
-            self.assertIn(a[:40], text)
-        self.assertIn("Subagent «", text)                       # subagent results carried over
-        self.assertNotIn("tool_use", text)
-        # the new file reads back as a normal session
-        new = tmp / "new-sid.jsonl"
-        new.write_text("".join(json.dumps(e) + "\n" for e in entries))
-        back = ex.parse_claude_session(new, cloud="off")
+        # native structures: queued interjection, Agent tool_use + tool_result, subagent transcript files
+        self.assertTrue(any(m["type"] == "attachment" and m["attachment"]["type"] == "queued_command" for m in msgs))
+        agent_calls = [b for m in msgs if m["type"] == "assistant" for b in m["message"]["content"]
+                       if b["type"] == "tool_use" and b["name"] == "Agent"]
+        self.assertGreater(len(agent_calls), 0)
+        results = [b for m in msgs if m["type"] == "user" and isinstance(m["message"]["content"], list)
+                   for b in m["message"]["content"] if b["type"] == "tool_result"]
+        self.assertEqual({b["id"] for b in agent_calls}, {b["tool_use_id"] for b in results})
+        metas = [json.loads(v) for k, v in files.items() if k.endswith(".meta.json")]
+        self.assertEqual({m["toolUseId"] for m in metas}, {b["id"] for b in agent_calls})
+        notes = [m for m in msgs if m["type"] == "assistant" and m["message"]["stop_reason"] == "tool_use"
+                 and m["message"]["content"][0]["type"] == "text"]
+        self.assertEqual(len(notes), sum(1 for x in parsed["turns"] if x["role"] == "assistant_progress"))
+        # written as a session, it reads back with the SAME structure as the source
+        new = tmp / ".claude" / "projects" / "-tmp-project-b"; new.mkdir(parents=True)
+        (new / "new-sid.jsonl").write_text("".join(json.dumps(e) + "\n" for e in entries))
+        for rel, text in files.items():
+            (new / "new-sid" / rel).parent.mkdir(parents=True, exist_ok=True)
+            (new / "new-sid" / rel).write_text(text)
+        back = ex.parse_claude_session(new / "new-sid.jsonl", cloud="off")
+        roles = lambda p: [x["role"] for x in p["turns"] if not (x["role"] == "event" and "hook" in x["text"])]
+        self.assertEqual(roles(back), roles(parsed))   # incl. commands and interruptions
+        for role in ("user", "user_interjection", "assistant", "assistant_progress"):
+            self.assertEqual([x["text"].split("\n\n")[-1] for x in back["turns"] if x["role"] == role],
+                             [x["text"] for x in parsed["turns"] if x["role"] == role], role)
+        self.assertEqual([x["name"] for x in back["turns"] if x["role"] == "subagent"],
+                         [x["name"] for x in parsed["turns"] if x["role"] == "subagent"])
+        for b, a in zip([x for x in back["turns"] if x["role"] == "subagent"],
+                        [x for x in parsed["turns"] if x["role"] == "subagent"]):
+            self.assertIn((a.get("report") or a.get("summary") or "")[:60], (b.get("report") or b.get("summary") or ""))
         self.assertEqual(back["title"], entries[0]["customTitle"])
-        self.assertGreaterEqual(back["user_messages"], parsed["user_messages"])
-        self.assertEqual(sum(1 for t in back["turns"] if t["role"] == "assistant"), len([m for m in msgs if m["type"] == "assistant"]))
 
     def test_project_baseline_from_first_requests(self):
         tmp = Path(tempfile.mkdtemp()); target = tmp / "proj"; target.mkdir()
@@ -893,3 +907,4 @@ class CreateSessionTests(unittest.TestCase):
         self.assertIn("claude --resume " + info["session_id"], out.getvalue())
         back = ex.parse_claude_session(path, cloud="off")
         self.assertIn("detail level Final answers only", back["turns"][0]["text"])
+        self.assertTrue((path.parent / path.stem / "subagents").is_dir())      # subagent transcripts written

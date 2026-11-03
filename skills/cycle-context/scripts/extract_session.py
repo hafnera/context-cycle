@@ -804,8 +804,11 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
 
     last_mid = None
     agent_busy = False  # True while the main agent is mid-turn (last message ended in a tool call)
+    ended_text = False  # the previous entry was an assistant text message with stop_reason end_turn
     for entry in entries:
         etype = entry.get("type")
+        if etype != "assistant":
+            ended_text = False
         ts = parse_ts(entry.get("timestamp"))
         if ts:
             meta["first_ts"] = meta["first_ts"] or ts
@@ -944,9 +947,13 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
             message = entry.get("message") or {}
             mid = message.get("id") or entry.get("messageId") or entry.get("requestId")
             blocks = blocks_of(entry)
+            if ended_text and mid != last_mid:
+                close_turn()  # a finished answer directly followed by another message (imported sessions)
             # a message that ends without a tool call ends the agent's turn
             agent_busy = any(b.get("type") == "tool_use" for b in blocks) \
                 or message.get("stop_reason") == "tool_use"
+            ended_text = message.get("stop_reason") == "end_turn" and any(
+                b.get("type") == "text" and (b.get("text") or "").strip() for b in blocks)
             for b in blocks:
                 if b.get("type") != "text":
                     continue
@@ -2103,13 +2110,25 @@ def transcript_version(path):
     return None
 
 
-def build_session_entries(parsed, cwd, session_id, version="2.1.0", model=None):
-    """Turn a condensed transcript into the entries of a NEW Claude Code
-    session (jsonl lines): the user's messages become user entries, the
-    agent's notes, answers and subagent reports become assistant entries with
-    text blocks, chained by uuid/parentUuid. Commands and event markers are
-    left out; a preface in the first message says where the history comes
-    from. Consecutive messages of one role are merged so roles alternate."""
+def build_session(parsed, cwd, session_id, version="2.1.0", model=None):
+    """Turn a condensed transcript into a NEW Claude Code session with the
+    same structures a native session has, so that every later tool (the
+    extractor, the compaction cycle, the detail levels) treats it exactly
+    like any other session:
+
+    - user messages → user entries; a preface in the first one names the source
+    - user interjections → `attachment` entries of type queued_command
+    - the agent's notes → assistant entries with stop_reason "tool_use"
+      (the agent went on working), final answers → stop_reason "end_turn"
+    - subagent results → an Agent tool_use entry, the tool_result entry with
+      the summary the main agent received, and the subagent's own transcript
+      under <session>/subagents/agent-<id>.jsonl (+ .meta.json) holding the
+      full report — the same files Claude Code writes
+    - carried-over compact summaries → user entries flagged isCompactSummary
+    Slash commands and user interruptions become the user entries Claude Code
+    itself writes for them (they end the agent's turn); hook markers are left out.
+    Returns (entries, files): the jsonl entries and {relative path: text}
+    for the subagent transcripts."""
     import uuid as _uuid
     agent_name = {"claude": "Claude Code", "codex": "Codex CLI", "desktop": "Claude Desktop",
                   "remote": "claude.ai/code cloud", "chat": "claude.ai chat"}.get(parsed["agent"], parsed["agent"])
@@ -2118,57 +2137,107 @@ def build_session_entries(parsed, cwd, session_id, version="2.1.0", model=None):
                f"({fmt_ts(parsed.get('first_ts'))} → {fmt_ts(parsed.get('last_ts'))}, {parsed.get('cwd') or '?'}; "
                f"detail level {parsed.get('detail_level') or 'Full'}). The messages below are that session's "
                f"user messages and the agent's answers; tool calls, tool results and thinking were omitted.")
-    items = []  # (role, text, ts)
-    for t in parsed["turns"]:
-        r = t["role"]
-        if r in ("user", "user_interjection"):
-            items.append(("user", t["text"], t.get("ts")))
-        elif r == "summary":
-            items.append(("user", "Carried-over summary of an earlier conversation:\n\n" + t["text"], t.get("ts")))
-        elif r in ("assistant_progress", "assistant"):
-            items.append(("assistant", t["text"], t.get("ts")))
-        elif r == "subagent":
-            parts = [f"🧭 Subagent «{t['name']}» reported:"]
-            if t.get("summary"):
-                parts.append(t["summary"])
-            if t.get("report"):
-                parts.append(f"Full report from subagent «{t['name']}»:\n\n" + embed(t["report"]))
-            elif t.get("report_omitted"):
-                parts.append("*(full report omitted at this detail level)*")
-            items.append(("assistant", "\n\n".join(parts), t.get("ts")))
-    merged = []
-    for role, text, ts in items:
-        if merged and merged[-1][0] == role:
-            merged[-1][1].append(text)
-        else:
-            merged.append([role, [text], ts])
-    if not merged or merged[0][0] != "user":
-        merged.insert(0, ["user", [], None])
-    merged[0][1].insert(0, preface)
+    model = model or "imported"
+    now = datetime.now(timezone.utc)
     entries = [{"type": "custom-title", "sessionId": session_id,
                 "customTitle": f"Imported: {parsed.get('title') or parsed['session_id']}"}]
-    parent, last_ts = None, None
-    now = datetime.now(timezone.utc)
-    for role, texts, ts in merged:
-        if ts is None or (last_ts and ts <= last_ts):
-            ts = (last_ts or now) + __import__("datetime").timedelta(milliseconds=1)
-        last_ts = ts
+    files = {}
+    state = {"parent": None, "last_ts": None, "n": 0}
+
+    def stamp(ts):
+        if ts is None or (state["last_ts"] and ts <= state["last_ts"]):
+            ts = (state["last_ts"] or now) + __import__("datetime").timedelta(milliseconds=1)
+        state["last_ts"] = ts
+        return ts.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+    def add(entry, ts):
         uid = str(_uuid.uuid4())
-        entry = {"parentUuid": parent, "isSidechain": False, "type": role, "uuid": uid,
-                 "timestamp": ts.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
-                 "sessionId": session_id, "cwd": cwd, "version": version, "userType": "external"}
-        if role == "user":
-            entry["message"] = {"role": "user", "content": "\n\n".join(texts)}
-        else:
-            entry["message"] = {"id": "msg_imported_" + uid.replace("-", "")[:20], "type": "message",
-                                "role": "assistant", "model": model or "imported",
-                                "content": [{"type": "text", "text": x} for x in texts],
-                                "stop_reason": "end_turn", "stop_sequence": None,
-                                "usage": {"input_tokens": 0, "output_tokens": 0,
-                                          "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}
+        entry.update({"parentUuid": state["parent"], "isSidechain": False, "uuid": uid, "timestamp": stamp(ts),
+                      "sessionId": session_id, "cwd": cwd, "version": version, "userType": "external"})
         entries.append(entry)
-        parent = uid
-    return entries
+        state["parent"] = uid
+        return uid
+
+    def assistant(blocks, ts, stop):
+        state["n"] += 1
+        return add({"type": "assistant", "message": {
+            "id": f"msg_imported_{state['n']:04d}_{session_id[:8]}", "type": "message", "role": "assistant",
+            "model": model, "content": blocks, "stop_reason": stop, "stop_sequence": None,
+            "usage": {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0,
+                      "cache_read_input_tokens": 0}}}, ts)
+
+    first_user_done = False
+    for t in parsed["turns"]:
+        r, ts = t["role"], t.get("ts")
+        if r == "user" or (r == "user_interjection" and not first_user_done):
+            text = t["text"] if first_user_done else preface + "\n\n" + t["text"]
+            first_user_done = True
+            add({"type": "user", "message": {"role": "user", "content": text}}, ts)
+        elif r == "user_interjection":
+            add({"type": "attachment", "attachment": {"type": "queued_command", "prompt": t["text"]}}, ts)
+        elif r == "summary":
+            if not first_user_done:
+                first_user_done = True
+                add({"type": "user", "isCompactSummary": True,
+                     "message": {"role": "user", "content": preface + "\n\n" + t["text"]}}, ts)
+            else:
+                add({"type": "user", "isCompactSummary": True, "message": {"role": "user", "content": t["text"]}}, ts)
+        elif r == "event" and t.get("text", "").startswith("[user interrupted]"):
+            # exactly what Claude Code writes when the user interrupts: it ends the agent's turn
+            add({"type": "user", "message": {"role": "user", "content": "[Request interrupted by user]"}}, ts)
+        elif r == "command":
+            cmd = t["text"].split(" ", 1)
+            name = cmd[0] if cmd[0].startswith("/") else "/" + cmd[0]
+            content = f"<command-message>{name[1:]}</command-message>\n<command-name>{name}</command-name>"
+            if len(cmd) > 1:
+                content += f"\n<command-args>{cmd[1]}</command-args>"
+            add({"type": "user", "message": {"role": "user", "content": content}}, ts)
+        elif r == "assistant_progress":
+            assistant([{"type": "text", "text": t["text"]}], ts, "tool_use")
+        elif r == "assistant":
+            assistant([{"type": "text", "text": t["text"]}], ts, "end_turn")
+        elif r == "subagent":
+            if not first_user_done:
+                first_user_done = True
+                add({"type": "user", "message": {"role": "user", "content": preface}}, ts)
+            name = t["name"]
+            m = re.match(r"^(.*) \(([^()]+)\)$", name)
+            desc, atype = (m.group(1), m.group(2)) if m else (name, None)
+            tool_id = "toolu_imp" + _uuid.uuid4().hex[:21]
+            agent_id = _uuid.uuid4().hex[:17]
+            inp = {"description": desc, "prompt": f"(imported with context-cycle from session {parsed['session_id']})"}
+            if atype:
+                inp["subagent_type"] = atype
+            assistant([{"type": "tool_use", "id": tool_id, "name": "Agent", "input": inp}], ts, "tool_use")
+            received = t.get("summary") or t.get("report") or "(no text)"
+            add({"type": "user", "message": {"role": "user", "content": [
+                {"tool_use_id": tool_id, "type": "tool_result", "content": received}]}}, ts)
+            sub_ts = stamp(ts)
+            sub_lines = [{"parentUuid": None, "isSidechain": True, "agentId": agent_id, "type": "user",
+                          "uuid": str(_uuid.uuid4()), "timestamp": sub_ts, "sessionId": session_id, "cwd": cwd,
+                          "version": version, "userType": "external",
+                          "message": {"role": "user", "content": inp["prompt"]}}]
+            report = t.get("report") or received
+            sub_lines.append({"parentUuid": sub_lines[0]["uuid"], "isSidechain": True, "agentId": agent_id,
+                              "type": "assistant", "uuid": str(_uuid.uuid4()), "timestamp": sub_ts,
+                              "sessionId": session_id, "cwd": cwd, "version": version, "userType": "external",
+                              "message": {"id": f"msg_imported_sub_{agent_id}", "type": "message", "role": "assistant",
+                                          "model": model, "content": [{"type": "text", "text": report}],
+                                          "stop_reason": "end_turn", "stop_sequence": None,
+                                          "usage": {"input_tokens": 0, "output_tokens": 0}}})
+            files[f"subagents/agent-{agent_id}.jsonl"] = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in sub_lines)
+            meta = {"description": desc, "toolUseId": tool_id, "spawnDepth": 1}
+            if atype:
+                meta["agentType"] = atype
+            files[f"subagents/agent-{agent_id}.meta.json"] = json.dumps(meta)
+    if not first_user_done:
+        add({"type": "user", "message": {"role": "user", "content": preface}}, None)
+    return entries, files
+
+
+def build_session_entries(parsed, cwd, session_id, version="2.1.0", model=None):
+    """Entries only (see build_session)."""
+    return build_session(parsed, cwd, session_id, version=version, model=model)[0]
 
 
 def project_baseline_tokens(project_dir):
@@ -2226,18 +2295,25 @@ def cmd_create(args):
     created = []
     for parsed in outputs:
         sid = str(_uuid.uuid4())
-        entries = build_session_entries(parsed, str(into), sid, version=version,
-                                        model=parsed.get("model") or model)
+        entries, files = build_session(parsed, str(into), sid, version=version,
+                                       model=parsed.get("model") or model)
         path = project_dir / f"{sid}.jsonl"
         path.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries), encoding="utf-8")
+        for rel, text in files.items():   # subagent transcripts, like Claude Code writes them
+            target = project_dir / sid / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
         texts = "\n".join(m["content"] if isinstance(m.get("content"), str) else
                           "\n".join(b.get("text", "") for b in m.get("content") or [] if isinstance(b, dict))
                           for m in (e.get("message") for e in entries) if isinstance(m, dict))
-        n_user = sum(1 for e in entries if e.get("type") == "user")
-        n_asst = sum(1 for e in entries if e.get("type") == "assistant")
+        n_user = sum(1 for e in entries if e.get("type") == "user" and isinstance(e["message"].get("content"), str))
+        n_asst = sum(1 for e in entries if e.get("type") == "assistant"
+                     and any(b.get("type") == "text" for b in e["message"]["content"]))
+        n_sub = len([f for f in files if f.endswith(".jsonl")])
         print(f"Created session {sid} in project {into}\n"
               f"  from: {parsed['agent']} session {parsed['session_id']} — {parsed.get('title') or ''}\n"
-              f"  detail level: {parsed.get('detail_level') or 'Full'}; {n_user} user + {n_asst} assistant messages\n"
+              f"  detail level: {parsed.get('detail_level') or 'Full'}; {n_user} user + {n_asst} assistant messages"
+              + (f" + {n_sub} subagent transcripts" if n_sub else "") + "\n"
               f"  file: {path}\n"
               f"  resume it there:  cd \"{into}\" && claude --resume {sid}")
         summary = import_summary(texts, args.project)

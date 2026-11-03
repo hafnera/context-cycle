@@ -111,7 +111,7 @@ When the user wants a session of project A to become a **real session in project
 python3 "<skill>/scripts/extract_session.py" create <id-prefix> [--all-projects] --into /path/to/projectB [detail flags]
 ```
 
-The command writes a new session file into project B's directory under `~/.claude/projects/` (user messages → user entries; the agent's notes, answers and subagent reports → assistant text entries; a preface in the first message names the source) and prints the new session id. Tell the user exactly how to open it: `cd /path/to/projectB && claude --resume <id>` (or `/resume` and pick "Imported: <title>"). You cannot switch the running session to the new one yourself. The target directory must exist; the running session's Claude Code version and model are used for the entries' metadata.
+The command writes a new session into project B's directory under `~/.claude/projects/` with native structure (user messages and queued interjections, the agent's notes and answers as assistant messages, each subagent result as an Agent tool call + result + the subagent's own transcript file, a preface in the first message naming the source) and prints the new session id, the import size and the project's baseline context. Because the structure is native, the compaction cycle and the detail levels work on the imported session exactly as on any other. Tell the user exactly how to open it: `cd /path/to/projectB && claude --resume <id>` (or `/resume` and pick "Imported: <title>"). You cannot switch the running session to the new one yourself. The target directory must exist; the running session's Claude Code version and model are used for the entries' metadata.
 
 ### 4. Confirm
 
