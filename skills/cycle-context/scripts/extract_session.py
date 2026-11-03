@@ -2180,24 +2180,33 @@ def project_baseline_tokens(project_dir):
     project = CLAUDE_PROJECTS_DIR / munge_path(project_dir)
     firsts = []
     for f in project.glob("*.jsonl"):
+        first, read, imported = None, 0, False
         try:
-            with open(f, "rb") as fh:
-                head = fh.read(400_000).decode("utf-8", errors="replace")
+            with open(f, "r", encoding="utf-8", errors="replace") as fh:
+                for line in fh:          # stream: the first request can sit behind very long lines
+                    read += len(line)
+                    if read > 30_000_000:
+                        break
+                    if "msg_imported_" in line or '"customTitle": "Imported:' in line:
+                        imported = True
+                        break
+                    if '"requestId"' not in line or '"usage"' not in line:
+                        continue
+                    try:
+                        e = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if e.get("type") != "assistant" or e.get("isSidechain"):
+                        continue
+                    u = (e.get("message") or {}).get("usage") or {}
+                    if "input_tokens" in u:
+                        first = (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
+                                 + u.get("cache_creation_input_tokens", 0))
+                        break
         except OSError:
             continue
-        if "msg_imported_" in head or '"customTitle": "Imported:' in head:
-            continue
-        for line in head.splitlines():
-            if '"requestId"' not in line or '"usage"' not in line:
-                continue
-            try:
-                u = (json.loads(line).get("message") or {}).get("usage") or {}
-            except (json.JSONDecodeError, AttributeError):
-                continue
-            if "input_tokens" in u:
-                firsts.append(u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
-                              + u.get("cache_creation_input_tokens", 0))
-                break
+        if first and not imported:
+            firsts.append(first)
     return int(statistics.median(firsts)) if firsts else None
 
 
