@@ -1871,10 +1871,12 @@ def render_markdown(parsed, max_chars=0):
         "Final answers only": "**USER MESSAGE** → **SUBAGENT** blocks (summary only) → **MAIN AGENT** "
                 "✅ final answer (agent notes omitted)",
         "Minimal": "**USER MESSAGE** → **MAIN AGENT** ✅ final answer (agent notes and subagents omitted)",
+        "recent": "**USER MESSAGE** → **SUBAGENT** blocks (summary only) → **MAIN AGENT** ✅ final answer; "
+                  "🔹 agent notes only for the most recent part of the session (older notes omitted)",
     }
+    legend = legends.get("recent" if level.startswith("Final answers + last") else level, legends["Full"])
     lines.append(f"> Condensed transcript — detail level **{level}**. Structure per turn: "
-                 f"{legends.get(level, legends['Full'])}. Tool calls, tool results and thinking "
-                 "are always omitted.")
+                 f"{legend}. Tool calls, tool results and thinking are always omitted.")
     if parsed.get("source"):
         lines.append(f"> Source: {parsed['source']}.")
     if parsed.get("cloud_origin_missing"):
@@ -2071,8 +2073,16 @@ def parse_targets(args, targets):
                 if t["role"] == "subagent" and t.get("report"):
                     t["report"] = None
                     t["report_omitted"] = True
+        notes_last = getattr(args, "notes_last", 0) or 0
+        if notes_last and not args.final_only:
+            # "Final answers + last N notes": drop every agent note except the N most recent
+            idx = [i for i, t in enumerate(parsed["turns"]) if t["role"] == "assistant_progress"]
+            for i in reversed(idx[:-notes_last] if len(idx) > notes_last else []):
+                del parsed["turns"][i]
+            parsed["notes_kept"] = min(notes_last, len(idx))
         parsed["detail_level"] = ("Minimal" if args.no_subagents and args.final_only
                                   else "Final answers only" if args.final_only
+                                  else f"Final answers + last {notes_last} notes" if notes_last
                                   else "Without subagent full reports" if args.no_subagent_reports
                                   else "Full")
         if args.last:
@@ -2373,6 +2383,9 @@ def main():
     sel.add_argument("--final-only", action="store_true",
                      help="only each turn's final answer (default: also the main agent's "
                           "progress notes between tool calls)")
+    sel.add_argument("--notes-last", type=int, default=0, metavar="N",
+                     help="keep only the N most recent agent notes (with --no-subagent-reports: "
+                          "the detail level 'Final answers + last N notes')")
     sel.add_argument("--max-chars", type=int, default=0,
                      help="truncate each message to N chars (0 = no truncation)")
     sel.add_argument("--last", type=int, default=0,

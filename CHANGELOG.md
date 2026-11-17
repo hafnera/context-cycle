@@ -2,6 +2,9 @@
 
 All notable changes of the context-cycle plugin. Versions are the `version` in `.claude-plugin/plugin.json`; the plugin updater only offers an update when it changes.
 
+## 1.18.0 — 2026-11-17
+- New detail level **Final answers + last 50 notes** (`--no-subagent-reports --notes-last 50`): like Final answers only, plus the agent's 50 most recent notes. It takes the fourth slot on the question card (a card holds four options); Minimal stays available on request. Hook estimates, skill, Mac app and docs updated.
+
 ## 1.17.1 — 2026-11-03
 - Desktop chats: published artifacts (Claude Docs documents) appear as `📄 Artifact «name»: link` markers; the content lives in the Claude Docs service and is fetched through its connector on request (skill instruction added).
 

@@ -58,10 +58,10 @@ Before **every** extract — a normal import, the current-session re-orientation
 
 1. **Full (Recommended)** — description: *"Everything: your messages, the agent's notes between tool calls, final answers, and every subagent's summary AND full report. Most complete context."* → flags: *(none)*
 2. **Without subagent full reports** — description: *"Like Full, but subagent blocks keep only the short summary the main agent received; the long full reports are left out."* → `--no-subagent-reports`
-3. **Final answers only** — description: *"Your messages and the agent's final answer per turn, plus the short subagent summaries (no full reports). The agent's intermediate notes between tool calls are left out."* → `--final-only --no-subagent-reports`
-4. **Minimal** — description: *"Only your messages and the agent's final answers. No agent notes, no subagent blocks at all. Smallest context."* → `--final-only --no-subagents`
+3. **Final answers + last 50 notes** — description: *"Like Final answers only, plus the agent's 50 most recent notes between tool calls, so the latest work phase stays detailed."* → `--no-subagent-reports --notes-last 50`
+4. **Final answers only** — description: *"Your messages and the agent's final answer per turn, plus the short subagent summaries (no full reports). The agent's intermediate notes between tool calls are left out."* → `--final-only --no-subagent-reports`
 
-Never pick a reduced level on your own. If the question cannot be asked (non-interactive session), import **Full** and say so explicitly.
+A question card holds at most four options, so the fifth level **Minimal** (*only your messages and the agent's final answers; no agent notes, no subagent blocks at all; smallest context* → `--final-only --no-subagents`) is not on the card: use it when the user asks for it (e.g. via "Other"). Use the labels and descriptions verbatim (English), do not paraphrase or translate them. Never pick a reduced level on your own. If the question cannot be asked (non-interactive session), import **Full** and say so explicitly.
 
 ### 3. Extract and ingest
 

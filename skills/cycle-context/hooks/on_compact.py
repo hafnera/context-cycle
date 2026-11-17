@@ -39,6 +39,7 @@ RESTORE_MODE = "ask"
 DETAIL_LEVELS = [
     ("Full", []),
     ("Without subagent full reports", ["--no-subagent-reports"]),
+    ("Final answers + last 50 notes", ["--no-subagent-reports", "--notes-last", "50"]),
     ("Final answers only", ["--final-only", "--no-subagent-reports"]),
     ("Minimal", ["--final-only", "--no-subagents"]),
 ]
@@ -70,8 +71,9 @@ def build_ask_text(hook_input):
                     + (f"  (flags: {' '.join(flags)})" if flags else "  (no flags)"))
     return ("The context was just compacted. The full history of this session is still "
             "on disk and can be restored with the cycle-context skill. BEFORE doing anything "
-            "else, ask the user with AskUserQuestion which detail level to import (labels and "
-            "descriptions exactly as in the cycle-context skill; recommend Full), showing "
+            "else, ask the user with AskUserQuestion which detail level to import (the four cards "
+            "with labels and descriptions exactly as in the cycle-context skill; recommend Full; "
+            "Minimal is not on the card and only used when the user asks for it), showing "
             "these estimates:\n" + "\n".join(rows) + "\n"
             "Then run  python3 \"" + str(script) + "\" extract " + " ".join(
                 f'"{a}"' if " " in a else a for a in target)

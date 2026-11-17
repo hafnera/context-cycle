@@ -252,8 +252,8 @@ class ExtractorStructureTests(unittest.TestCase):
 
     def test_detail_levels_are_monotonic_and_consistent(self):
         sizes, users = [], []
-        for flags in ([], ["--no-subagent-reports"], ["--final-only", "--no-subagent-reports"],
-                      ["--final-only", "--no-subagents"]):
+        for flags in ([], ["--no-subagent-reports"], ["--no-subagent-reports", "--notes-last", "1"],
+                      ["--final-only", "--no-subagent-reports"], ["--final-only", "--no-subagents"]):
             r = subprocess.run([sys.executable, str(SCRIPTS / "extract_session.py"), "extract",
                                 "--path", str(self.path), *flags], capture_output=True, text=True,
                                env={**os.environ, "HOME": str(self.tmp)})
@@ -266,6 +266,15 @@ class ExtractorStructureTests(unittest.TestCase):
         self.assertNotIn("🔹", subprocess.run([sys.executable, str(SCRIPTS / "extract_session.py"), "extract",
                                               "--path", str(self.path), "--final-only"],
                                              capture_output=True, text=True).stdout)
+        recent = subprocess.run([sys.executable, str(SCRIPTS / "extract_session.py"), "extract",
+                                 "--path", str(self.path), "--no-subagent-reports", "--notes-last", "1"],
+                                capture_output=True, text=True).stdout
+        all_notes = [t["text"] for t in self.parsed["turns"] if t["role"] == "assistant_progress"]
+        self.assertGreater(len(all_notes), 1)
+        self.assertEqual(recent.count("🔹"), 1)                         # only the most recent note
+        self.assertIn(all_notes[-1][:30], recent)
+        self.assertNotIn(all_notes[0][:30], recent)
+        self.assertIn("detail level **Final answers + last 1 notes**", recent)
 
     def test_list_and_title(self):
         self.assertEqual(self.parsed["title"], "Synthetic test session")
