@@ -2,6 +2,9 @@
 
 All notable changes of the context-cycle plugin. Versions are the `version` in `.claude-plugin/plugin.json`; the plugin updater only offers an update when it changes.
 
+## 1.19.2 — 2026-11-17
+- Skill: token estimates from a post-compact instruction are only valid for the question asked right after that compaction; when the skill is invoked later (slash command, reopened session, plugin update) the agent computes fresh sizes (`-o /dev/null`) instead of copying stale numbers from the context.
+
 ## 1.19.1 — 2026-11-17
 - An incoming message from another Claude session no longer ends the agent's turn (reverts that part of 1.18.2): the agent's text before it is an intermediate note, the turn's final answer is the last text before the next user message. In a session that peers wake constantly, "Final answers only" had grown from ~96k to ~234k tokens (259 instead of 58 answers); the messages themselves stay extracted as intermediate messages. Owner's decision (F1).
 
