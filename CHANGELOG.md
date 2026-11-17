@@ -2,6 +2,9 @@
 
 All notable changes of the context-cycle plugin. Versions are the `version` in `.claude-plugin/plugin.json`; the plugin updater only offers an update when it changes.
 
+## 1.19.1 — 2026-11-17
+- An incoming message from another Claude session no longer ends the agent's turn (reverts that part of 1.18.2): the agent's text before it is an intermediate note, the turn's final answer is the last text before the next user message. In a session that peers wake constantly, "Final answers only" had grown from ~96k to ~234k tokens (259 instead of 58 answers); the messages themselves stay extracted as intermediate messages. Owner's decision (F1).
+
 ## 1.19.0 — 2026-11-17
 - Extract markers are plain text instead of emojis (`## USER MESSAGE`, `### MAIN AGENT`, `**Agent note (time):**`, `**USER INTERJECTION …**`, `**MESSAGE FROM/TO ANOTHER CLAUDE SESSION …**`, `*User ran:*`, `WARNING:`): each emoji cost 4–5 tokens (0.85% of a large extract).
 

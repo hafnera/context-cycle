@@ -881,10 +881,11 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
                 pm = PEER_MSG_RE.search(meta_text)
                 if pm:
                     # a message from ANOTHER Claude session (SendMessage): an intermediate
-                    # message like the agent's own notes; if the agent had finished its
-                    # answer, that answer is final and a new response starts here
-                    if not agent_busy:
-                        close_turn()
+                    # message like the agent's own notes. It does NOT end the turn: what the
+                    # agent wrote before it stays a note, the turn's final answer is the last
+                    # text before the next user message (v1.19.1, owner's decision; v1.18.2
+                    # had closed the turn here, which doubled "Final answers only" in
+                    # projects whose sessions message each other constantly)
                     peer_names[pm.group(1)] = pm.group(2) or peer_names.get(pm.group(1)) or "another session"
                     turns.append({"role": "peer_message", "name": peer_names[pm.group(1)],
                                   "text": pm.group(3), "ts": ts})

@@ -584,8 +584,9 @@ class ContinuedCloudSessionTests(unittest.TestCase):
 
 
 class PeerMessageTests(unittest.TestCase):
-    """Messages from other Claude sessions (SendMessage) are input the agent
-    reacts to: they close a finished answer and appear as MESSAGE FROM/TO lines."""
+    """Messages from other Claude sessions (SendMessage) are intermediate
+    messages like the agent's notes: rendered as MESSAGE FROM/TO lines, they
+    never end a turn (the agent's text before an incoming one stays a note)."""
 
     def session(self, tmp):
         T2 = "2026-03-01T10:%02d:00.000Z"
@@ -611,11 +612,11 @@ class PeerMessageTests(unittest.TestCase):
         f.write_text("\n".join(json.dumps(l) for l in lines) + "\n")
         return f
 
-    def test_peer_message_closes_answer_and_renders(self):
+    def test_peer_message_is_intermediate_and_renders(self):
         tmp = Path(tempfile.mkdtemp())
         parsed = ex.parse_claude_session(self.session(tmp), cloud="off")
         roles = [t["role"] for t in parsed["turns"]]
-        self.assertEqual(roles, ["user", "assistant", "peer_message", "assistant_progress", "peer_message_out", "assistant"])
+        self.assertEqual(roles, ["user", "assistant_progress", "peer_message", "assistant_progress", "peer_message_out", "assistant"])
         out = parsed["turns"][4]
         self.assertEqual((out["name"], out["text"]), ("peer-a", "Antwort: 1 und 3 sind erledigt."))   # name via the socket map
         peer = parsed["turns"][2]
@@ -625,13 +626,13 @@ class PeerMessageTests(unittest.TestCase):
         self.assertIn("**MESSAGE FROM ANOTHER CLAUDE SESSION «peer-a»", md)
         self.assertIn("**MESSAGE TO ANOTHER CLAUDE SESSION «peer-a»", md)
         # both count as intermediate messages: final-only drops them, --notes-last keeps the newest
-        for flags, want in ((["--final-only"], 0), (["--notes-last", "1"], 1), (["--notes-last", "2"], 2)):
+        for flags, want in ((["--final-only"], 0), (["--notes-last", "1"], 1), (["--notes-last", "2"], 2), (["--notes-last", "3"], 3)):
             r = subprocess.run([sys.executable, str(SCRIPTS / "extract_session.py"), "extract", "--path",
                                 str(tmp / "peer.jsonl"), "--no-cloud", *flags], capture_output=True, text=True)
             self.assertEqual(sum(1 for l in r.stdout.splitlines() if l.startswith(("**Agent note", "**MESSAGE FROM", "**MESSAGE TO"))), want, flags)
         self.assertIn("**MESSAGE TO", subprocess.run([sys.executable, str(SCRIPTS / "extract_session.py"), "extract", "--path",
                                 str(tmp / "peer.jsonl"), "--no-cloud", "--notes-last", "1"], capture_output=True, text=True).stdout)
-        self.assertIn("turn ended here", md)                       # the first answer was final at the time
+        self.assertNotIn("turn ended here", md)                    # the incoming message did not end the turn
         self.assertNotIn("Security note", md)
         self.assertEqual(md.count("FINAL ANSWER"), 1)
         # native round trip through create
