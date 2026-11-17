@@ -62,14 +62,14 @@ The agent lists matching sessions **grouped by repo/project** with title, last-a
 |---|---|
 | **Full** (recommended) | your messages, the agent's notes between tool calls, final answers, subagent summaries **and** full reports |
 | Without subagent full reports | as Full, but subagent blocks keep only the summary the main agent received |
-| Final answers only | your messages, final answers, subagent summaries — no agent notes; a **follow-up question** then offers to keep the agent's most recent notes: 0 / 50 / 100 / All / any number, each with the total token estimate (`--no-subagent-reports --notes-last N`) |
+| Final answers only | your messages, final answers, subagent summaries — no intermediate messages (agent notes, messages exchanged with other sessions); a **follow-up question** then offers to keep the most recent ones: 0 / 50 / 100 / All / any number, each with the total token estimate (`--no-subagent-reports --notes-last N`) |
 | Minimal | your messages and final answers only |
 
 The agent never reduces on its own; `--last N` / `--max-chars N` are likewise only used on your explicit instruction.
 
 ### What the extract looks like
 
-Per user turn: `## 👤 USER MESSAGE` → `### 🧭 SUBAGENT «name»` blocks (summary as received, then "Here is the full report …", closed by an end marker) → `### 🤖 MAIN AGENT` section with `🔹 Agent note (time)` paragraphs, `💬 USER INTERJECTION` for messages you typed while the agent was working, and `#### ✅ MAIN AGENT — FINAL ANSWER`. If the agent answered, then continued after subagent reports arrived, the earlier answer is labeled as such. Slash commands (`⌘`), interruptions and hook-triggered follow-ups (`⚙`) stay as one-line markers. Headings inside embedded content are demoted so they can never be mistaken for the transcript's structure. A legend at the top names the detail level.
+Per user turn: `## 👤 USER MESSAGE` → `### 🧭 SUBAGENT «name»` blocks (summary as received, then "Here is the full report …", closed by an end marker) → `### 🤖 MAIN AGENT` section with `🔹 Agent note (time)` paragraphs, `💬 USER INTERJECTION` for messages you typed while the agent was working, `📨`/`📤` for messages the agent exchanged with other Claude sessions (cross-session messaging; they count as intermediate messages like the notes), and `#### ✅ MAIN AGENT — FINAL ANSWER`. If the agent answered, then continued after subagent reports arrived, the earlier answer is labeled as such. Slash commands (`⌘`), interruptions and hook-triggered follow-ups (`⚙`) stay as one-line markers. Headings inside embedded content are demoted so they can never be mistaken for the transcript's structure. A legend at the top names the detail level.
 
 ## Mac app (optional)
 
@@ -97,7 +97,7 @@ macOS 13+, Apple Silicon or Intel (built for the machine it is compiled on), ad-
 
 ## What the parser keeps and drops
 
-- **Kept:** real user messages; user interjections (queued while the agent worked); the main agent's progress notes and final answer per turn; subagent blocks — Agent-tool subagents (`subagents/agent-*.jsonl`, cloud `parent_tool_use_id` entries) with the received summary and the full report (`SubagentHandback` message, own transcript, or a locally persisted `tool-results/*.txt`), resumed subagents split per invocation; Workflow-tool runs (`subagents/workflows/<run>/`) as one block per run with the workflow's result and every workflow agent's report (their `StructuredOutput` JSON rendered as Markdown), grouped by phase; carried-over compact summaries; image markers.
+- **Kept:** real user messages; user interjections (queued while the agent worked); the main agent's progress notes and final answer per turn; messages received from and sent to other Claude sessions (as intermediate messages); subagent blocks — Agent-tool subagents (`subagents/agent-*.jsonl`, cloud `parent_tool_use_id` entries) with the received summary and the full report (`SubagentHandback` message, own transcript, or a locally persisted `tool-results/*.txt`), resumed subagents split per invocation; Workflow-tool runs (`subagents/workflows/<run>/`) as one block per run with the workflow's result and every workflow agent's report (their `StructuredOutput` JSON rendered as Markdown), grouped by phase; carried-over compact summaries; image markers.
 - **Removed:** `tool_use`/`tool_result`, thinking, background-task completion notices, subagent tool traffic, system reminders, hook/meta noise, IDE context, synthetic worker events, API errors, duplicate entries re-appended by resumes, and **rewound branches** (cloud: rewind events; CLI: a fork of two user messages under one parent — the abandoned branch is dropped).
 
 ## CLI reference

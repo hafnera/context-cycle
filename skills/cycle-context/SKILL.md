@@ -58,7 +58,7 @@ Before **every** extract — a normal import, the current-session re-orientation
 
 1. **Full (Recommended)** — description: *"Everything: your messages, the agent's notes between tool calls, final answers, and every subagent's summary AND full report. Most complete context."* → flags: *(none)*
 2. **Without subagent full reports** — description: *"Like Full, but subagent blocks keep only the short summary the main agent received; the long full reports are left out."* → `--no-subagent-reports`
-3. **Final answers only** — description: *"Your messages and the agent's final answer per turn, plus the short subagent summaries (no full reports). The agent's intermediate notes between tool calls are left out — a follow-up question lets you keep the most recent ones."* → `--final-only --no-subagent-reports` (see the follow-up below)
+3. **Final answers only** — description: *"Your messages and the agent's final answer per turn, plus the short subagent summaries (no full reports). The agent's intermediate notes between tool calls and its messages exchanged with other Claude sessions are left out — a follow-up question lets you keep the most recent ones."* → `--final-only --no-subagent-reports` (see the follow-up below)
 4. **Minimal** — description: *"Only your messages and the agent's final answers. No agent notes, no subagent blocks at all. Smallest context."* → `--final-only --no-subagents`
 
 Use the labels and descriptions verbatim (English), do not paraphrase or translate them. Never pick a reduced level on your own.

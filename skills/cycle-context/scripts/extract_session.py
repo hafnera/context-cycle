@@ -413,6 +413,9 @@ def apply_rewinds(entries):
 
 AGENT_TOOL_NAMES = ("Agent", "Task")
 PERSISTED_RE = re.compile(r"Full output saved to:\s*(\S+)")
+PEER_MSG_RE = re.compile(r'<cross-session-message\b[^>]*?from="([^"]*)"[^>]*?from-name="([^"]*)"[^>]*>\s*(.*?)\s*</cross-session-message>', re.DOTALL)
+PEER_ROLES = ("peer_message", "peer_message_out")   # messages exchanged with other Claude sessions
+NOTE_ROLES = ("assistant_progress",) + PEER_ROLES    # everything "Final answers only" leaves out
 AGENT_MSG_RE = re.compile(r'<agent-message from="([^"]+)">', re.DOTALL)
 TASK_ID_RE = re.compile(r"<task-id>(.*?)</task-id>", re.DOTALL)
 TOOL_USE_ID_RE = re.compile(r"<tool-use-id>(.*?)</tool-use-id>", re.DOTALL)
@@ -803,6 +806,7 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
                 del turns[k]
 
     last_mid = None
+    peer_names = {}     # socket/address of another Claude session -> its name (from its messages)
     agent_busy = False  # True while the main agent is mid-turn (last message ended in a tool call)
     ended_text = False  # the previous entry was an assistant text message with stop_reason end_turn
     for entry in entries:
@@ -874,6 +878,16 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
                 if meta_text.lstrip().startswith("Stop hook feedback:"):
                     close_turn()
                     turns.append({"role": "event", "text": f"[hook: {snippet(meta_text, 100)}]", "ts": ts})
+                pm = PEER_MSG_RE.search(meta_text)
+                if pm:
+                    # a message from ANOTHER Claude session (SendMessage): an intermediate
+                    # message like the agent's own notes; if the agent had finished its
+                    # answer, that answer is final and a new response starts here
+                    if not agent_busy:
+                        close_turn()
+                    peer_names[pm.group(1)] = pm.group(2) or peer_names.get(pm.group(1)) or "another session"
+                    turns.append({"role": "peer_message", "name": peer_names[pm.group(1)],
+                                  "text": pm.group(3), "ts": ts})
                 continue
             if entry.get("isCompactSummary"):
                 if not seen_real_user:
@@ -955,6 +969,16 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
             ended_text = message.get("stop_reason") == "end_turn" and any(
                 b.get("type") == "text" and (b.get("text") or "").strip() for b in blocks)
             for b in blocks:
+                if b.get("type") == "tool_use" and b.get("name") == "SendMessage":
+                    inp = b.get("input") if isinstance(b.get("input"), dict) else {}
+                    to = str(inp.get("to") or inp.get("recipient") or "")
+                    body = inp.get("message") or inp.get("content") or ""
+                    if to and body and to not in subagents and "agent:" + to not in subagents:
+                        # a message TO another Claude session: an intermediate message of the agent
+                        name = peer_names.get(to) or (to if not to.startswith("uds:") else
+                                                      re.sub(r"^Reply to ([^:]+):.*$", r"\1", str(inp.get("summary") or to)))
+                        turns.append({"role": "peer_message_out", "name": name, "text": str(body).strip(), "ts": ts})
+                    continue
                 if b.get("type") != "text":
                     continue
                 text = (b.get("text") or "").strip()
@@ -1865,14 +1889,16 @@ def render_markdown(parsed, max_chars=0):
     level = parsed.get("detail_level") or "Full"
     legends = {
         "Full": "**USER MESSAGE** → **SUBAGENT** blocks (summary + full report) → **MAIN AGENT** "
-                "section (🔹 agent notes written between tool calls, 💬 user interjections, ✅ final answer)",
+                "section (🔹 agent notes written between tool calls, 💬 user interjections, 📨/📤 messages "
+                "exchanged with other Claude sessions, ✅ final answer)",
         "Without subagent full reports": "**USER MESSAGE** → **SUBAGENT** blocks (summary only, full "
                 "reports omitted) → **MAIN AGENT** section (🔹 agent notes, 💬 user interjections, ✅ final answer)",
         "Final answers only": "**USER MESSAGE** → **SUBAGENT** blocks (summary only) → **MAIN AGENT** "
                 "✅ final answer (agent notes omitted)",
         "Minimal": "**USER MESSAGE** → **MAIN AGENT** ✅ final answer (agent notes and subagents omitted)",
         "recent": "**USER MESSAGE** → **SUBAGENT** blocks (summary only) → **MAIN AGENT** ✅ final answer; "
-                  "🔹 agent notes only for the most recent part of the session (older notes omitted)",
+                  "🔹 agent notes and 📨/📤 messages exchanged with other sessions only for the most recent "
+                  "part of the session (older ones omitted)",
     }
     legend = legends.get("recent" if level.startswith("Final answers + last") else level, legends["Full"])
     lines.append(f"> Condensed transcript — detail level **{level}**. Structure per turn: "
@@ -1953,6 +1979,14 @@ def render_markdown(parsed, max_chars=0):
                 elif item["role"] == "user_interjection":
                     when = f" ({fmt_ts(item['ts'], with_date=False)})" if item.get("ts") else ""
                     lines.append(f"💬 **USER INTERJECTION{when} (written while the agent was working):** "
+                                 + truncate(item["text"], max_chars)); lines.append("")
+                elif item["role"] == "peer_message":
+                    when = f" ({fmt_ts(item['ts'], with_date=False)})" if item.get("ts") else ""
+                    lines.append(f"📨 **MESSAGE FROM ANOTHER CLAUDE SESSION «{item['name']}»{when}:** "
+                                 + truncate(item["text"], max_chars)); lines.append("")
+                elif item["role"] == "peer_message_out":
+                    when = f" ({fmt_ts(item['ts'], with_date=False)})" if item.get("ts") else ""
+                    lines.append(f"📤 **MESSAGE TO ANOTHER CLAUDE SESSION «{item['name']}»{when}:** "
                                  + truncate(item["text"], max_chars)); lines.append("")
                 elif item["role"] == "assistant":
                     lines.append("#### ✅ MAIN AGENT — FINAL ANSWER")
@@ -2073,10 +2107,13 @@ def parse_targets(args, targets):
                 if t["role"] == "subagent" and t.get("report"):
                     t["report"] = None
                     t["report_omitted"] = True
+        if args.final_only:
+            parsed["turns"] = [t for t in parsed["turns"] if t["role"] not in PEER_ROLES]
         notes_last = getattr(args, "notes_last", 0) or 0
         if notes_last and not args.final_only:
-            # "Final answers + last N notes": drop every agent note except the N most recent
-            idx = [i for i, t in enumerate(parsed["turns"]) if t["role"] == "assistant_progress"]
+            # "Final answers + last N notes": drop every intermediate message (agent notes and
+            # messages exchanged with other sessions) except the N most recent
+            idx = [i for i, t in enumerate(parsed["turns"]) if t["role"] in NOTE_ROLES]
             for i in reversed(idx[:-notes_last] if len(idx) > notes_last else []):
                 del parsed["turns"][i]
             parsed["notes_kept"] = min(notes_last, len(idx))
@@ -2134,7 +2171,10 @@ def build_session(parsed, cwd, session_id, version="2.1.0", model=None):
     like any other session:
 
     - user messages → user entries; a preface in the first one names the source
-    - user interjections → `attachment` entries of type queued_command
+    - user interjections → `attachment` entries of type queued_command;
+      messages from other Claude sessions → the isMeta user entries Claude
+      Code writes for them (cross-session-message); messages sent to other
+      sessions → SendMessage tool calls with their result
     - the agent's notes → assistant entries with stop_reason "tool_use"
       (the agent went on working), final answers → stop_reason "end_turn"
     - subagent results → an Agent tool_use entry, the tool_result entry with
@@ -2192,6 +2232,18 @@ def build_session(parsed, cwd, session_id, version="2.1.0", model=None):
             add({"type": "user", "message": {"role": "user", "content": text}}, ts)
         elif r == "user_interjection":
             add({"type": "attachment", "attachment": {"type": "queued_command", "prompt": t["text"]}}, ts)
+        elif r == "peer_message_out":
+            tool_id = "toolu_imp" + _uuid.uuid4().hex[:21]
+            assistant([{"type": "tool_use", "id": tool_id, "name": "SendMessage",
+                        "input": {"to": t.get("name") or "another session", "message": t["text"],
+                                  "summary": snippet(t["text"], 60)}}], ts, "tool_use")
+            add({"type": "user", "message": {"role": "user", "content": [
+                {"tool_use_id": tool_id, "type": "tool_result", "content": "Message sent."}]}}, ts)
+        elif r == "peer_message":
+            add({"type": "user", "isMeta": True, "message": {"role": "user", "content":
+                 "Another Claude session sent a message:\n<cross-session-message from=\"imported\" "
+                 f"from-name=\"{t.get('name') or 'another session'}\" from-mode=\"default\">\n{t['text']}\n"
+                 "</cross-session-message>"}}, ts)
         elif r == "summary":
             if not first_user_done:
                 first_user_done = True
