@@ -23,7 +23,7 @@ flowchart TD
     B["2 · Context reaches 80% ⚠<br/>A hook tells the agent: update ALL project docs now<br/>(incl. architecture docs + learnings from mistakes)"]
     C["3 · Agent stops on purpose and posts:<br/>✔ what was documented<br/>✔ key findings of the last tool result<br/>✔ numbered list of its planned next steps<br/>✔ “please run /compact now”"]
     D["4 · You type /compact —<br/>Claude Code shrinks the context to a summary"]
-    E["5 · Hook: agent asks you which detail level to restore<br/>(Full / without subagent reports / final answers + last 50 notes / final answers only,<br/>each with a token estimate) and imports it from the session file"]
+    E["5 · Hook: agent asks you which detail level to restore<br/>(Full / without subagent reports / final answers only / minimal, each with a token estimate;<br/>for final answers only: how many recent agent notes to keep) and imports it from the session file"]
     F["6 · Agent re-reads the project docs and continues<br/>exactly at step 1 of its own next-steps list"]
 
     A --> B --> C --> D --> E --> F
@@ -62,9 +62,8 @@ The agent lists matching sessions **grouped by repo/project** with title, last-a
 |---|---|
 | **Full** (recommended) | your messages, the agent's notes between tool calls, final answers, subagent summaries **and** full reports |
 | Without subagent full reports | as Full, but subagent blocks keep only the summary the main agent received |
-| Final answers + last 50 notes | as Final answers only, plus the agent's 50 most recent notes — the latest work phase stays detailed (`--no-subagent-reports --notes-last 50`) |
-| Final answers only | your messages, final answers, subagent summaries — no agent notes |
-| Minimal | your messages and final answers only (not on the question card, which holds four options; on request) |
+| Final answers only | your messages, final answers, subagent summaries — no agent notes; a **follow-up question** then offers to keep the agent's most recent notes: 0 / 50 / 100 / All / any number, each with the total token estimate (`--no-subagent-reports --notes-last N`) |
+| Minimal | your messages and final answers only |
 
 The agent never reduces on its own; `--last N` / `--max-chars N` are likewise only used on your explicit instruction.
 

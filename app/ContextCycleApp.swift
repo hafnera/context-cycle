@@ -48,16 +48,29 @@ struct DetailLevel: Identifiable {
         DetailLevel(name: "Without subagent full reports",
                     description: "Like Full, but subagent blocks keep only the short summary the main agent received.",
                     flags: ["--no-subagent-reports"]),
-        DetailLevel(name: "Final answers + last 50 notes",
-                    description: "Like Final answers only, plus the agent's 50 most recent notes between tool calls, so the latest work phase stays detailed.",
-                    flags: ["--no-subagent-reports", "--notes-last", "50"]),
         DetailLevel(name: "Final answers only",
-                    description: "Your messages and the agent's final answer per turn, plus subagent summaries. No agent notes.",
+                    description: "Your messages and the agent's final answer per turn, plus subagent summaries. Below you choose how many of the agent's most recent notes to keep.",
                     flags: ["--final-only", "--no-subagent-reports"]),
         DetailLevel(name: "Minimal",
                     description: "Only your messages and the agent's final answers. No notes, no subagent blocks.",
                     flags: ["--final-only", "--no-subagents"]),
     ]
+}
+
+/// Follow-up for "Final answers only": how many of the agent's most recent notes to keep.
+struct NotesOption: Identifiable {
+    let label: String
+    let flags: [String]
+    var id: String { label }
+    static let all = [
+        NotesOption(label: "0", flags: ["--final-only", "--no-subagent-reports"]),
+        NotesOption(label: "50", flags: ["--no-subagent-reports", "--notes-last", "50"]),
+        NotesOption(label: "100", flags: ["--no-subagent-reports", "--notes-last", "100"]),
+        NotesOption(label: "All", flags: ["--no-subagent-reports"]),
+    ]
+    static func custom(_ n: Int) -> NotesOption {
+        NotesOption(label: "\(n)", flags: ["--no-subagent-reports", "--notes-last", String(n)])
+    }
 }
 
 struct CreateResult: Decodable {
@@ -289,12 +302,29 @@ struct CopySheet: View {
     @AppStorage("targetDir") private var targetDir = ""
     @State private var levelIndex = 0
     @State private var estimates: [Int?] = Array(repeating: nil, count: DetailLevel.all.count)
+    @State private var notesIndex = 0            // follow-up for "Final answers only"
+    @State private var notesEstimates: [Int?] = Array(repeating: nil, count: NotesOption.all.count)
+    @State private var customNotes = ""
     @State private var running = false
     @State private var errorText: String?
     @State private var result: CreateResult?
     @State private var savedNote: String?
 
-    private var level: DetailLevel { DetailLevel.all[levelIndex] }
+    private var finalAnswersOnly: Bool { DetailLevel.all[levelIndex].name == "Final answers only" }
+    private var level: DetailLevel {
+        let base = DetailLevel.all[levelIndex]
+        guard finalAnswersOnly else { return base }
+        if notesIndex == NotesOption.all.count, let n = Int(customNotes.trimmingCharacters(in: .whitespaces)), n >= 0 {
+            return DetailLevel(name: "Final answers + last \(n) notes", description: base.description, flags: NotesOption.custom(n).flags)
+        }
+        let opt = NotesOption.all[min(notesIndex, NotesOption.all.count - 1)]
+        return DetailLevel(name: opt.label == "0" ? base.name : "Final answers + last \(opt.label) notes",
+                           description: base.description, flags: opt.flags)
+    }
+
+    private func tokens(_ n: Int?) -> String {
+        n.map { $0 >= 1000 ? String(format: "~%.1fk tokens", Double($0) / 1000) : "~\($0) tokens" } ?? "…"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -319,6 +349,28 @@ struct CopySheet: View {
                             Text(lv.description).font(.callout).foregroundStyle(.secondary)
                         }
                     }.contentShape(Rectangle()).onTapGesture { levelIndex = i }
+                    if lv.name == "Final answers only" && finalAnswersOnly {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Keep the agent's most recent notes between tool calls:").font(.callout).bold()
+                            ForEach(Array(NotesOption.all.enumerated()), id: \.offset) { j, opt in
+                                HStack {
+                                    Toggle(isOn: Binding(get: { notesIndex == j }, set: { if $0 { notesIndex = j } })) { EmptyView() }
+                                        .toggleStyle(.checkbox).labelsHidden()
+                                    Text(opt.label == "0" ? "0 (none)" : opt.label == "All" ? "All notes" : "Last \(opt.label)")
+                                    Spacer()
+                                    Text(tokens(notesEstimates[j])).foregroundStyle(.secondary).font(.callout)
+                                }.contentShape(Rectangle()).onTapGesture { notesIndex = j }
+                            }
+                            HStack {
+                                Toggle(isOn: Binding(get: { notesIndex == NotesOption.all.count }, set: { if $0 { notesIndex = NotesOption.all.count } })) { EmptyView() }
+                                    .toggleStyle(.checkbox).labelsHidden()
+                                Text("Last")
+                                TextField("n", text: $customNotes).textFieldStyle(.roundedBorder).frame(width: 70)
+                                    .onChange(of: customNotes) { _ in notesIndex = NotesOption.all.count }
+                                Text("notes")
+                            }
+                        }.padding(.leading, 28).padding(.bottom, 4)
+                    }
                 }
                 if !markdownOnly {
                     Text("Target project directory").bold().padding(.top, 4)
@@ -376,6 +428,11 @@ struct CopySheet: View {
             for (i, lv) in DetailLevel.all.enumerated() {
                 let est = Backend.estimateTokens(row: r, projectDir: dir, level: lv)
                 await MainActor.run { estimates[i] = est }
+            }
+            for (j, opt) in NotesOption.all.enumerated() {
+                let lv = DetailLevel(name: opt.label, description: "", flags: opt.flags)
+                let est = Backend.estimateTokens(row: r, projectDir: dir, level: lv)
+                await MainActor.run { notesEstimates[j] = est }
             }
         }
     }

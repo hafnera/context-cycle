@@ -2,8 +2,11 @@
 
 All notable changes of the context-cycle plugin. Versions are the `version` in `.claude-plugin/plugin.json`; the plugin updater only offers an update when it changes.
 
+## 1.18.1 — 2026-11-17
+- The question card keeps its four levels; choosing **Final answers only** triggers a follow-up question: keep the agent's most recent notes — 0 / 50 / 100 / All / any number (`--notes-last N`), each with the total token estimate. Hook, skill, Mac app and docs updated.
+
 ## 1.18.0 — 2026-11-17
-- New detail level **Final answers + last 50 notes** (`--no-subagent-reports --notes-last 50`): like Final answers only, plus the agent's 50 most recent notes. It takes the fourth slot on the question card (a card holds four options); Minimal stays available on request. Hook estimates, skill, Mac app and docs updated.
+- New flag `--notes-last N` (keep only the N most recent agent notes; with `--no-subagent-reports` the level "Final answers + last N notes").
 
 ## 1.17.1 — 2026-11-03
 - Desktop chats: published artifacts (Claude Docs documents) appear as `📄 Artifact «name»: link` markers; the content lives in the Claude Docs service and is fetched through its connector on request (skill instruction added).

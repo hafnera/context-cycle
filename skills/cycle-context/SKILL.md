@@ -58,10 +58,19 @@ Before **every** extract — a normal import, the current-session re-orientation
 
 1. **Full (Recommended)** — description: *"Everything: your messages, the agent's notes between tool calls, final answers, and every subagent's summary AND full report. Most complete context."* → flags: *(none)*
 2. **Without subagent full reports** — description: *"Like Full, but subagent blocks keep only the short summary the main agent received; the long full reports are left out."* → `--no-subagent-reports`
-3. **Final answers + last 50 notes** — description: *"Like Final answers only, plus the agent's 50 most recent notes between tool calls, so the latest work phase stays detailed."* → `--no-subagent-reports --notes-last 50`
-4. **Final answers only** — description: *"Your messages and the agent's final answer per turn, plus the short subagent summaries (no full reports). The agent's intermediate notes between tool calls are left out."* → `--final-only --no-subagent-reports`
+3. **Final answers only** — description: *"Your messages and the agent's final answer per turn, plus the short subagent summaries (no full reports). The agent's intermediate notes between tool calls are left out — a follow-up question lets you keep the most recent ones."* → `--final-only --no-subagent-reports` (see the follow-up below)
+4. **Minimal** — description: *"Only your messages and the agent's final answers. No agent notes, no subagent blocks at all. Smallest context."* → `--final-only --no-subagents`
 
-A question card holds at most four options, so the fifth level **Minimal** (*only your messages and the agent's final answers; no agent notes, no subagent blocks at all; smallest context* → `--final-only --no-subagents`) is not on the card: use it when the user asks for it (e.g. via "Other"). Use the labels and descriptions verbatim (English), do not paraphrase or translate them. Never pick a reduced level on your own. If the question cannot be asked (non-interactive session), import **Full** and say so explicitly.
+Use the labels and descriptions verbatim (English), do not paraphrase or translate them. Never pick a reduced level on your own.
+
+**Follow-up when the user picks "Final answers only":** ask a second AskUserQuestion — *"How many of the agent's most recent notes between tool calls should be included?"* — with exactly these options, each with the total token estimate of the resulting extract (the post-compact instruction provides them; otherwise run the extracts with `-o /dev/null` to get the size lines):
+
+- **0** — description: *"No agent notes: your messages, final answers and subagent summaries only."* → `--final-only --no-subagent-reports`
+- **50** — description: *"The 50 most recent agent notes, so the latest work phase stays detailed."* → `--no-subagent-reports --notes-last 50`
+- **100** — description: *"The 100 most recent agent notes."* → `--no-subagent-reports --notes-last 100`
+- **All** — description: *"Every agent note (same as Without subagent full reports)."* → `--no-subagent-reports`
+
+"Other" with a number N → `--no-subagent-reports --notes-last N`. If the question cannot be asked (non-interactive session), import **Full** and say so explicitly.
 
 ### 3. Extract and ingest
 

@@ -271,7 +271,7 @@ class ExtractorStructureTests(unittest.TestCase):
                                 capture_output=True, text=True).stdout
         all_notes = [t["text"] for t in self.parsed["turns"] if t["role"] == "assistant_progress"]
         self.assertGreater(len(all_notes), 1)
-        self.assertEqual(recent.count("🔹"), 1)                         # only the most recent note
+        self.assertEqual(sum(1 for l in recent.splitlines() if l.startswith("🔹")), 1)   # only the most recent note
         self.assertIn(all_notes[-1][:30], recent)
         self.assertNotIn(all_notes[0][:30], recent)
         self.assertIn("detail level **Final answers + last 1 notes**", recent)
@@ -427,6 +427,9 @@ class HookTests(unittest.TestCase):
         self.assertIn("AskUserQuestion", r1.stdout)
         self.assertIn("- Full:", r1.stdout)
         self.assertIn("- Minimal:", r1.stdout)
+        for opt in ("- 0 notes:", "- 50 notes:", "- 100 notes:", "- All notes:"):   # follow-up estimates
+            self.assertIn(opt, r1.stdout)
+        self.assertIn("--notes-last 50", r1.stdout)
         self.assertEqual(r2.stdout, "")
 
 

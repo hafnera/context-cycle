@@ -39,9 +39,16 @@ RESTORE_MODE = "ask"
 DETAIL_LEVELS = [
     ("Full", []),
     ("Without subagent full reports", ["--no-subagent-reports"]),
-    ("Final answers + last 50 notes", ["--no-subagent-reports", "--notes-last", "50"]),
     ("Final answers only", ["--final-only", "--no-subagent-reports"]),
     ("Minimal", ["--final-only", "--no-subagents"]),
+]
+# Follow-up when "Final answers only" is chosen: how many of the agent's most
+# recent notes between tool calls to keep (0 = none, All = every note).
+NOTES_OPTIONS = [
+    ("0", ["--final-only", "--no-subagent-reports"]),
+    ("50", ["--no-subagent-reports", "--notes-last", "50"]),
+    ("100", ["--no-subagent-reports", "--notes-last", "100"]),
+    ("All", ["--no-subagent-reports"]),
 ]
 # Optional bounds for the "full" mode injection. Both None: everything.
 LAST_USER_TURNS = None
@@ -60,21 +67,29 @@ def build_ask_text(hook_input):
     transcript_path = hook_input.get("transcript_path")
     target = ["--path", transcript_path] if transcript_path and Path(transcript_path).is_file() \
         else ["--current", "--project", hook_input.get("cwd") or str(Path.cwd())]
-    rows = []
-    for label, flags in DETAIL_LEVELS:
-        r = subprocess.run([sys.executable or "python3", str(script), "extract", *target, *flags],
-                           capture_output=True, text=True, timeout=120)
-        # the extractor's own size line (exact via the token-counting API when logged in)
-        m = re.search(r"Imported context: ~([\d.]+)k tokens", r.stderr or "") if r.returncode == 0 else None
-        size = f"~{m.group(1)}k tokens" if m else f"~{len(r.stdout) / 2 / 1000:.1f}k tokens (estimated)"
-        rows.append(f"- {label}: {size}"
-                    + (f"  (flags: {' '.join(flags)})" if flags else "  (no flags)"))
+    sizes = {}
+
+    def size_of(flags):
+        key = tuple(flags)
+        if key not in sizes:
+            r = subprocess.run([sys.executable or "python3", str(script), "extract", *target, *flags],
+                               capture_output=True, text=True, timeout=120)
+            # the extractor's own size line (exact via the token-counting API when logged in)
+            m = re.search(r"Imported context: ~([\d.]+)k tokens", r.stderr or "") if r.returncode == 0 else None
+            sizes[key] = f"~{m.group(1)}k tokens" if m else f"~{len(r.stdout) / 2 / 1000:.1f}k tokens (estimated)"
+        return sizes[key]
+    rows = [f"- {label}: {size_of(flags)}" + (f"  (flags: {' '.join(flags)})" if flags else "  (no flags)")
+            for label, flags in DETAIL_LEVELS]
+    notes = [f"- {label} notes: {size_of(flags)}  (flags: {' '.join(flags)})" for label, flags in NOTES_OPTIONS]
     return ("The context was just compacted. The full history of this session is still "
             "on disk and can be restored with the cycle-context skill. BEFORE doing anything "
             "else, ask the user with AskUserQuestion which detail level to import (the four cards "
-            "with labels and descriptions exactly as in the cycle-context skill; recommend Full; "
-            "Minimal is not on the card and only used when the user asks for it), showing "
-            "these estimates:\n" + "\n".join(rows) + "\n"
+            "with labels and descriptions exactly as in the cycle-context skill; recommend Full), "
+            "showing these estimates:\n" + "\n".join(rows) + "\n"
+            "If the user picks \"Final answers only\", ask a SECOND AskUserQuestion (labels exactly as in "
+            "the skill: 0 / 50 / 100 / All) how many of the agent's most recent notes between tool calls "
+            "to include, with these total sizes; \"Other\" = any number N -> flags "
+            "--no-subagent-reports --notes-last N:\n" + "\n".join(notes) + "\n"
             "Then run  python3 \"" + str(script) + "\" extract " + " ".join(
                 f'"{a}"' if " " in a else a for a in target)
             + " <chosen flags> -o <file>  and Read that file COMPLETELY (multiple Read calls "
