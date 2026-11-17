@@ -69,7 +69,7 @@ The agent never reduces on its own; `--last N` / `--max-chars N` are likewise on
 
 ### What the extract looks like
 
-Per user turn: `## 👤 USER MESSAGE` → `### 🧭 SUBAGENT «name»` blocks (summary as received, then "Here is the full report …", closed by an end marker) → `### 🤖 MAIN AGENT` section with `🔹 Agent note (time)` paragraphs, `💬 USER INTERJECTION` for messages you typed while the agent was working, `📨`/`📤` for messages the agent exchanged with other Claude sessions (cross-session messaging; they count as intermediate messages like the notes), and `#### ✅ MAIN AGENT — FINAL ANSWER`. If the agent answered, then continued after subagent reports arrived, the earlier answer is labeled as such. Slash commands (`⌘`), interruptions and hook-triggered follow-ups (`⚙`) stay as one-line markers. Headings inside embedded content are demoted so they can never be mistaken for the transcript's structure. A legend at the top names the detail level.
+Per user turn: `## USER MESSAGE` → `### SUBAGENT «name»` blocks (summary as received, then "Here is the full report …", closed by an end marker) → `### MAIN AGENT` section with `**Agent note (time)**` paragraphs, `USER INTERJECTION` for messages you typed while the agent was working, `MESSAGE FROM/TO ANOTHER CLAUDE SESSION` for messages the agent exchanged with other Claude sessions (cross-session messaging; they count as intermediate messages like the notes), and `#### MAIN AGENT — FINAL ANSWER`. If the agent answered, then continued after subagent reports arrived, the earlier answer is labeled as such. Slash commands (`*User ran:*`), interruptions and hook-triggered follow-ups (`*[…]*`) stay as one-line markers. Headings inside embedded content are demoted so they can never be mistaken for the transcript's structure. A legend at the top names the detail level.
 
 ## Mac app (optional)
 
@@ -143,4 +143,4 @@ Synthetic sessions cover tool calls, progress notes, interjections, rewinds, dup
 - Workflow results in task notifications are truncated by Claude Code at ~8k chars; the extract says so and relies on the per-agent reports, which are complete.
 - Secrets pasted into a session are part of its transcript and therefore of the extract.
 - Project paths are NFC-normalized before they are matched against `~/.claude/projects/` (macOS file dialogs hand out decomposed Unicode).
-- Artifacts created in Claude Desktop chats are Claude Docs documents; the local cache holds only their name and link, so the extract carries a `📄 Artifact «name»: link` marker and an agent can fetch the content through the Claude Docs connector on request.
+- Artifacts created in Claude Desktop chats are Claude Docs documents; the local cache holds only their name and link, so the extract carries a `Artifact «name»: link` marker and an agent can fetch the content through the Claude Docs connector on request.

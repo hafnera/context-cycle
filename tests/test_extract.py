@@ -206,14 +206,14 @@ class ExtractorStructureTests(unittest.TestCase):
             self.assertNotIn(bad, self.md, bad)
 
     def test_progress_notes_and_final_answers(self):
-        self.assertRegex(self.md, r"🔹 \*\*Agent note \(\d\d:\d\d\):\*\* Looking at the repo first\.")
-        self.assertIn("#### ✅ MAIN AGENT — FINAL ANSWER\n\nDone: feature built and tests added.", self.md)
-        self.assertEqual(self.md.count("#### ✅ MAIN AGENT — FINAL ANSWER"), self.md.count("## 👤 USER MESSAGE")
+        self.assertRegex(self.md, r"\*\*Agent note \(\d\d:\d\d\):\*\* Looking at the repo first\.")
+        self.assertIn("#### MAIN AGENT — FINAL ANSWER\n\nDone: feature built and tests added.", self.md)
+        self.assertEqual(self.md.count("#### MAIN AGENT — FINAL ANSWER"), self.md.count("## USER MESSAGE")
                          + 1)  # +1: the hook-triggered continuation "Self-improve done."
 
     def test_markers(self):
-        self.assertIn("*⌘ User ran:* `/model opus`", self.md)
-        self.assertIn("*⚙ [hook: Stop hook feedback: run /self-improve]*", self.md)
+        self.assertIn("*User ran:* `/model opus`", self.md)
+        self.assertIn("*[hook: Stop hook feedback: run /self-improve]*", self.md)
 
     def test_subagent_segments_and_names(self):
         subs = [t for t in self.parsed["turns"] if t["role"] == "subagent"]
@@ -236,9 +236,9 @@ class ExtractorStructureTests(unittest.TestCase):
         self.assertIn("«You are reviewer B. Check the tests.»", wf[0]["report"])  # description-less name
 
     def test_per_turn_order_user_subagents_main_agent(self):
-        blocks = re.split(r"^## 👤 USER MESSAGE", self.md, flags=re.M)[1:]
+        blocks = re.split(r"^## USER MESSAGE", self.md, flags=re.M)[1:]
         for b in blocks:
-            i, j = b.find("### 🧭"), b.find("### 🤖 MAIN AGENT")
+            i, j = b.find("### SUBAGENT"), b.find("### MAIN AGENT")
             if i >= 0 and j >= 0:
                 self.assertLess(i, j, "subagent blocks must precede the main-agent section")
         self.assertIn("*(end of subagent «Research API docs (Explore)»)*", self.md)
@@ -259,11 +259,11 @@ class ExtractorStructureTests(unittest.TestCase):
                                env={**os.environ, "HOME": str(self.tmp)})
             self.assertEqual(r.returncode, 0, r.stderr)
             sizes.append(len(r.stdout))
-            users.append(r.stdout.count("## 👤 USER MESSAGE"))
+            users.append(r.stdout.count("## USER MESSAGE"))
             self.assertIn("Imported context:", r.stderr)
         self.assertEqual(sizes, sorted(sizes, reverse=True), sizes)
         self.assertEqual(len(set(users)), 1)
-        self.assertNotIn("🔹", subprocess.run([sys.executable, str(SCRIPTS / "extract_session.py"), "extract",
+        self.assertNotIn("**Agent note (", subprocess.run([sys.executable, str(SCRIPTS / "extract_session.py"), "extract",
                                               "--path", str(self.path), "--final-only"],
                                              capture_output=True, text=True).stdout)
         recent = subprocess.run([sys.executable, str(SCRIPTS / "extract_session.py"), "extract",
@@ -271,7 +271,7 @@ class ExtractorStructureTests(unittest.TestCase):
                                 capture_output=True, text=True).stdout
         all_notes = [t["text"] for t in self.parsed["turns"] if t["role"] == "assistant_progress"]
         self.assertGreater(len(all_notes), 1)
-        self.assertEqual(sum(1 for l in recent.splitlines() if l.startswith("🔹")), 1)   # only the most recent note
+        self.assertEqual(sum(1 for l in recent.splitlines() if l.startswith("**Agent note")), 1)   # only the most recent note
         self.assertIn(all_notes[-1][:30], recent)
         self.assertNotIn(all_notes[0][:30], recent)
         self.assertIn("detail level **Final answers + last 1 notes**", recent)
@@ -556,7 +556,7 @@ class ContinuedCloudSessionTests(unittest.TestCase):
             self.assertEqual(parsed["title"], "Cloud title")
             self.assertEqual(ex.fmt_ts(parsed["first_ts"]), "2026-01-01 " + ex.fmt_ts(cloud[0] and ex.parse_ts(cloud[0]["timestamp"]), with_date=False))
             self.assertIn("cse_orig", md.split("---")[0])  # Source line names the origin
-            self.assertNotIn("⚠", md)
+            self.assertNotIn("WARNING:", md)
             # cached: a second parse needs no session search and no event fetch
             ex.cloud_sessions = lambda: (_ for _ in ()).throw(AssertionError("network used"))
             ex.cloud_events = lambda cid: (_ for _ in ()).throw(AssertionError("network used"))
@@ -569,7 +569,7 @@ class ContinuedCloudSessionTests(unittest.TestCase):
             parsed3 = ex.parse_claude_session(f)
             md3 = ex.render_markdown(parsed3)
             self.assertTrue(parsed3.get("cloud_origin_missing"))
-            self.assertIn("⚠", md3)
+            self.assertIn("WARNING:", md3)
             self.assertIn("--cloud-origin", md3)
             self.assertEqual([t["text"] for t in parsed3["turns"] if t["role"] == "user"],
                              ["Build the analyzer", "Continue locally: add tests"])
@@ -585,7 +585,7 @@ class ContinuedCloudSessionTests(unittest.TestCase):
 
 class PeerMessageTests(unittest.TestCase):
     """Messages from other Claude sessions (SendMessage) are input the agent
-    reacts to: they close a finished answer and appear as 📨 lines."""
+    reacts to: they close a finished answer and appear as MESSAGE FROM/TO lines."""
 
     def session(self, tmp):
         T2 = "2026-03-01T10:%02d:00.000Z"
@@ -622,14 +622,14 @@ class PeerMessageTests(unittest.TestCase):
         self.assertEqual(peer["name"], "peer-a")
         self.assertEqual(peer["text"], "peer-a: Einverstanden mit 1 und 3.")
         md = ex.render_markdown(parsed)
-        self.assertIn("📨 **MESSAGE FROM ANOTHER CLAUDE SESSION «peer-a»", md)
-        self.assertIn("📤 **MESSAGE TO ANOTHER CLAUDE SESSION «peer-a»", md)
+        self.assertIn("**MESSAGE FROM ANOTHER CLAUDE SESSION «peer-a»", md)
+        self.assertIn("**MESSAGE TO ANOTHER CLAUDE SESSION «peer-a»", md)
         # both count as intermediate messages: final-only drops them, --notes-last keeps the newest
         for flags, want in ((["--final-only"], 0), (["--notes-last", "1"], 1), (["--notes-last", "2"], 2)):
             r = subprocess.run([sys.executable, str(SCRIPTS / "extract_session.py"), "extract", "--path",
                                 str(tmp / "peer.jsonl"), "--no-cloud", *flags], capture_output=True, text=True)
-            self.assertEqual(sum(1 for l in r.stdout.splitlines() if l[:1] and l[:1] in "🔹📨📤"), want, flags)
-        self.assertIn("📤", subprocess.run([sys.executable, str(SCRIPTS / "extract_session.py"), "extract", "--path",
+            self.assertEqual(sum(1 for l in r.stdout.splitlines() if l.startswith(("**Agent note", "**MESSAGE FROM", "**MESSAGE TO"))), want, flags)
+        self.assertIn("**MESSAGE TO", subprocess.run([sys.executable, str(SCRIPTS / "extract_session.py"), "extract", "--path",
                                 str(tmp / "peer.jsonl"), "--no-cloud", "--notes-last", "1"], capture_output=True, text=True).stdout)
         self.assertIn("turn ended here", md)                       # the first answer was final at the time
         self.assertNotIn("Security note", md)
@@ -740,10 +740,10 @@ class ChatTests(unittest.TestCase):
         for noise in ("abandoned branch", "secret reasoning", "RESULT-NOISE", "web_search"):
             self.assertNotIn(noise, md)
         self.assertIn("*[file attached: vertrag.pdf]*", md)
-        self.assertIn("📄 **Artifact «Vergleich»** (create)", md)
+        self.assertIn("**Artifact «Vergleich»** (create)", md)
         self.assertIn("##### Vergleich", md)                  # artifact content, headings demoted
-        self.assertIn("✉ **Draft email — variant «kooperativ»**\nSubject: Rahmenvertrag\n\nHallo Herr K,", md)
-        self.assertIn("✉ **Sent email via Gmail**\nTo: k@example.com\nSubject: Rahmenvertrag\n\nGesendeter Text.", md)
+        self.assertIn("**Draft email — variant «kooperativ»**\nSubject: Rahmenvertrag\n\nHallo Herr K,", md)
+        self.assertIn("**Sent email via Gmail**\nTo: k@example.com\nSubject: Rahmenvertrag\n\nGesendeter Text.", md)
         final_md = ex.render_markdown(ex.parse_chat_record(self.chat_record(), all_text=False))
         self.assertIn("Hallo Herr K,", final_md)              # deliverables survive every detail level
         self.assertNotIn("Die Nachteile sind", final_md)
@@ -845,11 +845,11 @@ class ChatTests(unittest.TestCase):
             # deliverable detection with the new tool naming
             blk = {"type": "tool_use", "name": "Gmail: Send message",
                    "input": {"to": "a@b.c", "subject": "Hi", "body": "Text"}}
-            self.assertIn("✉ **Sent email via Gmail", ex.chat_tool_deliverable(blk))
+            self.assertIn("**Sent email via Gmail", ex.chat_tool_deliverable(blk))
             art = {"type": "tool_use", "name": "Artifact", "input": {},
                    "artifact_page": {"url": "https://claude.ai/code/artifact/abc", "name": "Lebenslauf", "kind": "publish"}}
             d = ex.chat_tool_deliverable(art)
-            self.assertIn("📄 **Artifact «Lebenslauf»**", d); self.assertIn("https://claude.ai/code/artifact/abc", d)
+            self.assertIn("**Artifact «Lebenslauf»**", d); self.assertIn("https://claude.ai/code/artifact/abc", d)
         finally:
             ex.DESKTOP_IDB_BLOB_DIR, ex.DESKTOP_IDB_LEVELDB_DIR = saved
             ex._idb_cache["records"] = None

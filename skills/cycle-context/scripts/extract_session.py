@@ -1447,7 +1447,7 @@ def chat_tool_deliverable(block):
     if page and page.get("url"):
         # Claude Desktop (hub) chats: a published artifact / Claude Doc — only name
         # and link are cached locally, the content lives on claude.ai
-        return (f"📄 **Artifact «{page.get('name') or 'untitled'}»** ({page.get('kind') or 'published'}): "
+        return (f"**Artifact «{page.get('name') or 'untitled'}»** ({page.get('kind') or 'published'}): "
                 f"{page['url']}  \n*(a Claude Doc — its content is not cached locally; an agent can read it "
                 f"through the Claude Docs connector, doc id = the id at the end of the link)*")
     if not inp:
@@ -1457,7 +1457,7 @@ def chat_tool_deliverable(block):
         for v in inp.get("variants") or []:
             if not isinstance(v, dict) or not (v.get("body") or v.get("subject")):
                 continue
-            head = f"✉ **Draft {inp.get('kind') or 'message'}"
+            head = f"**Draft {inp.get('kind') or 'message'}"
             head += f" — variant «{v['label']}»**" if v.get("label") else "**"
             for key in ("to", "subject"):
                 if v.get(key):
@@ -1468,7 +1468,7 @@ def chat_tool_deliverable(block):
     if (any(k in low for k in ("send_message", "send_email", "create_draft", "update_draft"))
             or low.endswith(("_reply", "_forward"))) and (inp.get("body") or inp.get("subject")):
         action = "Sent" if "send" in low else "Draft"
-        head = f"✉ **{action} email via {name.split(':')[0]}**"
+        head = f"**{action} email via {name.split(':')[0]}**"
         for key in ("to", "cc", "subject"):
             if inp.get(key):
                 head += f"\n{key.capitalize()}: {inp[key]}"
@@ -1477,7 +1477,7 @@ def chat_tool_deliverable(block):
         cmd = inp.get("command") or "create"
         title = inp.get("title") or inp.get("id") or "?"
         if cmd in ("create", "rewrite") and inp.get("content"):
-            return f"📄 **Artifact «{title}»** ({cmd})\n\n" + embed(str(inp["content"])).strip()
+            return f"**Artifact «{title}»** ({cmd})\n\n" + embed(str(inp["content"])).strip()
         return f"*[artifact {cmd}: «{title}»]*"
     return None
 
@@ -1840,7 +1840,7 @@ def cmd_list(args):
     for r in rows:
         groups.setdefault(r["project"] or "(unknown project)", []).append(r)
     for project, group in groups.items():
-        print(f"📁 {project} — {len(group)} session(s)")
+        print(f"{project} — {len(group)} session(s)")
         for r in group:
             flag = "  *ACTIVE* (probably the running session)" if r["active"] else ""
             sid = r["session_id"][:8] if r["session_id"] else "?"
@@ -1889,15 +1889,15 @@ def render_markdown(parsed, max_chars=0):
     level = parsed.get("detail_level") or "Full"
     legends = {
         "Full": "**USER MESSAGE** → **SUBAGENT** blocks (summary + full report) → **MAIN AGENT** "
-                "section (🔹 agent notes written between tool calls, 💬 user interjections, 📨/📤 messages "
-                "exchanged with other Claude sessions, ✅ final answer)",
+                "section (agent notes written between tool calls, user interjections, messages "
+                "exchanged with other Claude sessions, final answer)",
         "Without subagent full reports": "**USER MESSAGE** → **SUBAGENT** blocks (summary only, full "
-                "reports omitted) → **MAIN AGENT** section (🔹 agent notes, 💬 user interjections, ✅ final answer)",
+                "reports omitted) → **MAIN AGENT** section (agent notes, user interjections, final answer)",
         "Final answers only": "**USER MESSAGE** → **SUBAGENT** blocks (summary only) → **MAIN AGENT** "
-                "✅ final answer (agent notes omitted)",
-        "Minimal": "**USER MESSAGE** → **MAIN AGENT** ✅ final answer (agent notes and subagents omitted)",
-        "recent": "**USER MESSAGE** → **SUBAGENT** blocks (summary only) → **MAIN AGENT** ✅ final answer; "
-                  "🔹 agent notes and 📨/📤 messages exchanged with other sessions only for the most recent "
+                "final answer (agent notes omitted)",
+        "Minimal": "**USER MESSAGE** → **MAIN AGENT** final answer (agent notes and subagents omitted)",
+        "recent": "**USER MESSAGE** → **SUBAGENT** blocks (summary only) → **MAIN AGENT** final answer; "
+                  "agent notes and messages exchanged with other sessions only for the most recent "
                   "part of the session (older ones omitted)",
     }
     legend = legends.get("recent" if level.startswith("Final answers + last") else level, legends["Full"])
@@ -1906,39 +1906,39 @@ def render_markdown(parsed, max_chars=0):
     if parsed.get("source"):
         lines.append(f"> Source: {parsed['source']}.")
     if parsed.get("cloud_origin_missing"):
-        lines.append("> ⚠ This session continues a claude.ai/code cloud session; the local file holds "
+        lines.append("> WARNING: This session continues a claude.ai/code cloud session; the local file holds "
                      "only a replay of the cloud's main chain, so the reports of subagents launched "
                      "in the cloud are missing here. The original cloud session could not be "
                      "identified or fetched (offline / not logged in / --no-cloud): log in with the "
                      "claude CLI and rerun, or pass --cloud-origin <session id>.")
     if parsed.get("head_cut"):
-        lines.append("> ⚠ Desktop caches long remote sessions tail-only (head cut): the "
+        lines.append("> WARNING: Desktop caches long remote sessions tail-only (head cut): the "
                      "earliest part of this session is not available locally.")
     if parsed.get("omitted_users"):
-        lines.append(f"> ⚠ The first {parsed['omitted_users']} user messages were "
+        lines.append(f"> WARNING: The first {parsed['omitted_users']} user messages were "
                      "omitted (--last); rerun without --last for the full history.")
     lines.append("")
     def note(turn):
         when = f" ({fmt_ts(turn['ts'], with_date=False)})" if turn.get("ts") else ""
-        return f"🔹 **Agent note{when}:** " + truncate(turn["text"], max_chars)
+        return f"**Agent note{when}:** " + truncate(turn["text"], max_chars)
 
     def render_group(group):
         user = group.get("user")
         if user:
             lines.append("---")
-            lines.append(f"## 👤 USER MESSAGE — {fmt_ts(user['ts'])}" if user["ts"] else "## 👤 USER MESSAGE")
+            lines.append(f"## USER MESSAGE — {fmt_ts(user['ts'])}" if user["ts"] else "## USER MESSAGE")
             lines.append("")
             lines.append(truncate(user["text"], max_chars))
             lines.append("")
         elif group["agent"] or group["subagents"]:
             lines.append("---")
-            lines.append("## 🤖 MAIN AGENT — continuation (no user message precedes this part)")
+            lines.append("## MAIN AGENT — continuation (no user message precedes this part)")
             lines.append("")
         for s in group["subagents"]:
             if s.get("workflow_agents") is not None:
-                lines.append(f"### 🧭 {s['name']} — workflow result as received by the main agent")
+                lines.append(f"### {s['name']} — workflow result as received by the main agent")
             else:
-                lines.append(f"### 🧭 SUBAGENT «{s['name']}» — result as received by the main agent")
+                lines.append(f"### SUBAGENT «{s['name']}» — result as received by the main agent")
             lines.append("")
             if s["summary"]:
                 lines.append(truncate(s["summary"], max_chars))
@@ -1964,12 +1964,12 @@ def render_markdown(parsed, max_chars=0):
             lines.append("")
         if group["agent"]:
             if user:
-                lines.append("### 🤖 MAIN AGENT — response to the user message above")
+                lines.append("### MAIN AGENT — response to the user message above")
                 lines.append("")
             finals = [i for i, a in enumerate(group["agent"]) if a["role"] == "assistant"]
             for i, item in enumerate(group["agent"]):
                 if item["role"] == "assistant" and finals and i != finals[-1]:
-                    lines.append("#### ✅ MAIN AGENT — ANSWER (turn ended here; the agent continued "
+                    lines.append("#### MAIN AGENT — ANSWER (turn ended here; the agent continued "
                                  "afterwards, e.g. when subagent reports arrived)")
                     lines.append("")
                     lines.append(truncate(item["text"], max_chars)); lines.append("")
@@ -1978,18 +1978,18 @@ def render_markdown(parsed, max_chars=0):
                     lines.append(note(item)); lines.append("")
                 elif item["role"] == "user_interjection":
                     when = f" ({fmt_ts(item['ts'], with_date=False)})" if item.get("ts") else ""
-                    lines.append(f"💬 **USER INTERJECTION{when} (written while the agent was working):** "
+                    lines.append(f"**USER INTERJECTION{when} (written while the agent was working):** "
                                  + truncate(item["text"], max_chars)); lines.append("")
                 elif item["role"] == "peer_message":
                     when = f" ({fmt_ts(item['ts'], with_date=False)})" if item.get("ts") else ""
-                    lines.append(f"📨 **MESSAGE FROM ANOTHER CLAUDE SESSION «{item['name']}»{when}:** "
+                    lines.append(f"**MESSAGE FROM ANOTHER CLAUDE SESSION «{item['name']}»{when}:** "
                                  + truncate(item["text"], max_chars)); lines.append("")
                 elif item["role"] == "peer_message_out":
                     when = f" ({fmt_ts(item['ts'], with_date=False)})" if item.get("ts") else ""
-                    lines.append(f"📤 **MESSAGE TO ANOTHER CLAUDE SESSION «{item['name']}»{when}:** "
+                    lines.append(f"**MESSAGE TO ANOTHER CLAUDE SESSION «{item['name']}»{when}:** "
                                  + truncate(item["text"], max_chars)); lines.append("")
                 elif item["role"] == "assistant":
-                    lines.append("#### ✅ MAIN AGENT — FINAL ANSWER")
+                    lines.append("#### MAIN AGENT — FINAL ANSWER")
                     lines.append("")
                     lines.append(truncate(item["text"], max_chars)); lines.append("")
 
@@ -1999,11 +1999,11 @@ def render_markdown(parsed, max_chars=0):
         if role in ("command", "event", "summary"):
             render_group(group); group = {"user": None, "subagents": [], "agent": []}
             if role == "command":
-                lines.append(f"*⌘ User ran:* `{turn['text']}`"); lines.append("")
+                lines.append(f"*User ran:* `{turn['text']}`"); lines.append("")
             elif role == "event":
-                lines.append(f"*⚙ {turn['text']}*"); lines.append("")
+                lines.append(f"*{turn['text']}*"); lines.append("")
             else:
-                lines.append("---"); lines.append("### 📋 Carried-over summary of an earlier conversation")
+                lines.append("---"); lines.append("### Carried-over summary of an earlier conversation")
                 lines.append(""); lines.append(truncate(turn["text"], max_chars)); lines.append("")
             continue
         if role == "user":

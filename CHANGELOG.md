@@ -2,6 +2,9 @@
 
 All notable changes of the context-cycle plugin. Versions are the `version` in `.claude-plugin/plugin.json`; the plugin updater only offers an update when it changes.
 
+## 1.19.0 — 2026-11-17
+- Extract markers are plain text instead of emojis (`## USER MESSAGE`, `### MAIN AGENT`, `**Agent note (time):**`, `**USER INTERJECTION …**`, `**MESSAGE FROM/TO ANOTHER CLAUDE SESSION …**`, `*User ran:*`, `WARNING:`): each emoji cost 4–5 tokens (0.85% of a large extract).
+
 ## 1.18.2 — 2026-11-17
 - Messages exchanged with other Claude sessions (cross-session messaging) are extracted: incoming `cross-session-message` meta entries as 📨, outgoing `SendMessage` calls as 📤 (named via the sender's address). They count as intermediate messages: Final answers only drops them, `--notes-last N` keeps the newest together with the agent's notes. An incoming message that arrives while the agent is idle closes its previous answer, so answers that were followed by peer traffic are no longer misread as notes. `create` writes them natively.
 
