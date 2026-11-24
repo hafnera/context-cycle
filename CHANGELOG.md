@@ -2,6 +2,9 @@
 
 All notable changes of the context-cycle plugin. Versions are the `version` in `.claude-plugin/plugin.json`; the plugin updater only offers an update when it changes.
 
+## 1.20.2 — 2026-11-24
+- Docs only: README, architecture doc and the skill's introduction describe the current extract contents (messages exchanged with other sessions, question-list notes), the turn model, the restore hook's rules (ask regardless of standing rules, recompute stale sizes), the take-over of question lists and the restart needed after a plugin update.
+
 ## 1.20.1 — 2026-11-24
 - A session created with `create` is told in its first message that it continues the source session and, if the offene-fragen mod's tools are available, to take over that session's question list with `fragen_uebernehmen` (von = source id; `bestaetigt` only after the owner's word). The skill gives the same instruction for hand-over imports into a running session. The mod keeps one list per session id, so questions never follow the text by themselves; the mod's side does the rest: since offene-fragen 0.19.0 (ADR-0013 in the Mods repo) `fragen_uebernehmen` also copies the predecessor's archive silently (answers, reasons, times, new ids, origin; the result names only the count) and `von` resolves sessions of any project.
 
