@@ -93,6 +93,7 @@ Extract options:
 - `--last N` — keep only the last N user messages + their answers (**only when the user asked for it**)
 - `--max-chars N` — truncate each message to N chars (**only when the user asked for it**)
 - `--final-only` / `--no-subagent-reports` / `--no-subagents` — the detail levels from step 2 (**only as chosen by the user**)
+- `--no-question-notes` — drop the short notes about the agent's changes to its list of open questions for the user (offene-fragen mod); every level except Minimal keeps them, because the user's answers are in the extract and these notes are the only place the questions appear
 - `--current` — the currently running session of this project (see below)
 - `--path FILE` — extract a specific `.jsonl` directly (bypasses discovery)
 - `--cloud-origin ID` — for a locally continued cloud session whose origin was not found automatically

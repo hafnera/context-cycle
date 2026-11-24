@@ -647,6 +647,86 @@ class PeerMessageTests(unittest.TestCase):
         self.assertEqual([t["role"] for t in back["turns"]], roles)
 
 
+class QuestionNoteTests(unittest.TestCase):
+    """The agent's changes to its list of open questions for the owner (the
+    offene-fragen mod's tools) are tool calls: rendered as short agent notes
+    (id, question, summary) that every level except Minimal keeps."""
+
+    def session(self, tmp):
+        T3 = "2026-04-01T09:%02d:00.000Z"
+        q = {"frage": "Soll X nach Y umziehen?", "kurz": "X liegt heute in A. Ein Umzug nach Y spart B.",
+             "details": "## Lang\n...", "empfehlung": "Ja.", "optionen": ["Ja", "Nein"]}
+        lines = [
+            user("u1", None, T3 % 0, "Bitte prüfen."),
+            assistant("a1", "u1", T3 % 1, [{"type": "text", "text": "Ich prüfe."},
+                                            {"type": "tool_use", "id": "q1", "name": "mcp__offene-fragen__frage_setzen", "input": q}],
+                      mid="m1", stop="tool_use"),
+            tool_result("r1", "a1", T3 % 2, "q1", "F14 angelegt.\n\nProjekt · sitzung: 1 offen\n- F14 · Soll X nach Y umziehen?"),
+            assistant("a2", "r1", T3 % 3, [{"type": "tool_use", "id": "q2", "name": "mcp__offene-fragen__fragen_lesen", "input": {}}],
+                      mid="m2", stop="tool_use"),
+            tool_result("r2", "a2", T3 % 3, "q2", "Projekt · sitzung: 1 offen"),
+            assistant("a3", "r2", T3 % 4, [{"type": "tool_use", "id": "q3", "name": "mcp__offene-fragen__frage_setzen",
+                                            "input": {"id": "F14", "kurz": "X liegt heute in A; Y ist frei."}}],
+                      mid="m3", stop="tool_use"),
+            tool_result("r3", "a3", T3 % 4, "q3", "F14 geändert.\n\nProjekt · sitzung: 1 offen"),
+            assistant("a4", "r3", T3 % 5, [{"type": "tool_use", "id": "q4", "name": "mcp__offene-fragen__frage_setzen",
+                                            "input": {"frage": "x" * 300, "kurz": "zu lang"}}],
+                      mid="m4", stop="tool_use"),
+            _e("user", "r4", "a4", T3 % 5, message={"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "q4", "is_error": True, "content": "`frage` ist eine Zeile mit höchstens 240 Zeichen."}]}),
+            assistant("a5", "r4", T3 % 6, [{"type": "text", "text": "Die Frage F14 steht in der Liste."}], mid="m5"),
+            user("u2", "a5", T3 % 7, "[Antwort aus „Offene Fragen“ · F14]\nFrage: Soll X nach Y umziehen?\nJa"),
+            assistant("a6", "u2", T3 % 8, [{"type": "tool_use", "id": "q5", "name": "mcp__offene-fragen__frage_entfernen",
+                                            "input": {"id": "F14", "grund": "Im Chat beantwortet: Ja."}}],
+                      mid="m6", stop="tool_use"),
+            tool_result("r5", "a6", T3 % 8, "q5", "F14 geschlossen.\n\nProjekt · sitzung: 0 offen"),
+            assistant("a7", "r5", T3 % 9, [{"type": "text", "text": "Umzug erledigt."}], mid="m7"),
+        ]
+        f = tmp / "questions.jsonl"
+        f.write_text("\n".join(json.dumps(l) for l in lines) + "\n")
+        return f
+
+    def test_question_notes_at_every_level_except_minimal(self):
+        tmp = Path(tempfile.mkdtemp())
+        parsed = ex.parse_claude_session(self.session(tmp), cloud="off")
+        roles = [t["role"] for t in parsed["turns"]]
+        self.assertEqual(roles, ["user", "assistant_progress", "question_note", "question_note", "assistant",
+                                 "user", "question_note", "assistant"])
+        qn = [t for t in parsed["turns"] if t["role"] == "question_note"]
+        self.assertEqual([(t["kind"], t["qid"]) for t in qn], [("new", "F14"), ("changed", "F14"), ("closed", "F14")])
+        self.assertEqual(qn[0]["text"], "Soll X nach Y umziehen? — X liegt heute in A. Ein Umzug nach Y spart B.")
+        self.assertEqual(qn[1]["text"], "X liegt heute in A; Y ist frei.")   # only what was set
+        md = ex.render_markdown(parsed)
+        self.assertIn("**Agent note (11:01) · new question F14:** Soll X nach Y umziehen? — X liegt", md)
+        self.assertIn("**Agent note (11:04) · question F14 changed:** X liegt heute in A; Y ist frei.", md)
+        self.assertIn("**Agent note (11:08) · question F14 closed:** Im Chat beantwortet: Ja.", md)
+        self.assertNotIn("## Lang", md)                      # never the long fields
+        self.assertNotIn("zu lang", md)                      # rejected call left out
+        self.assertNotIn("fragen_lesen", md)
+        def run(*flags):
+            return subprocess.run([sys.executable, str(SCRIPTS / "extract_session.py"), "extract", "--path",
+                                   str(tmp / "questions.jsonl"), "--no-cloud", *flags], capture_output=True, text=True).stdout
+        for flags in ([], ["--no-subagent-reports"], ["--final-only", "--no-subagent-reports"],
+                      ["--no-subagent-reports", "--notes-last", "1"]):
+            out = run(*flags)
+            self.assertEqual(out.count("· new question F14"), 1, flags)
+            self.assertEqual(out.count("· question F14 closed"), 1, flags)
+        self.assertEqual(run("--no-subagent-reports", "--notes-last", "1").count("**Agent note (11:01):**"), 1)  # notes-last counts only real notes
+        self.assertNotIn("· new question", run("--final-only", "--no-subagents"))          # Minimal
+        self.assertNotIn("· new question", run("--no-question-notes"))
+        # native round trip through create
+        entries, files = ex.build_session(parsed, "/tmp/p", "sid-q", version="2.1.0", model="x")
+        calls = [b for e in entries if e.get("type") == "assistant" for b in e["message"]["content"]
+                 if b.get("type") == "tool_use" and b["name"].startswith("mcp__offene-fragen__")]
+        self.assertEqual([c["name"].split("__")[-1] for c in calls], ["frage_setzen", "frage_setzen", "frage_entfernen"])
+        self.assertEqual(calls[1]["input"]["id"], "F14")
+        new = tmp / "sid-q.jsonl"; new.write_text("".join(json.dumps(e) + "\n" for e in entries))
+        back = ex.parse_claude_session(new, cloud="off")
+        self.assertEqual([t["role"] for t in back["turns"]], roles)
+        self.assertEqual([(t["kind"], t["qid"], t["text"]) for t in back["turns"] if t["role"] == "question_note"],
+                         [(t["kind"], t["qid"], t["text"]) for t in qn])
+
+
 class ModelDetectionTests(unittest.TestCase):
     def test_model_and_window_come_from_the_running_session(self):
         home = Path(tempfile.mkdtemp())

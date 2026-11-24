@@ -416,6 +416,42 @@ PERSISTED_RE = re.compile(r"Full output saved to:\s*(\S+)")
 PEER_MSG_RE = re.compile(r'<cross-session-message\b[^>]*?from="([^"]*)"[^>]*?from-name="([^"]*)"[^>]*>\s*(.*?)\s*</cross-session-message>', re.DOTALL)
 PEER_ROLES = ("peer_message", "peer_message_out")   # messages exchanged with other Claude sessions
 NOTE_ROLES = ("assistant_progress",) + PEER_ROLES    # everything "Final answers only" leaves out
+# Changes the agent makes to its list of open questions for the owner (the
+# "offene-fragen" mod): tool calls, so invisible in the extract — rendered as
+# short agent notes (id, question, summary) that every level except Minimal
+# keeps and --notes-last does not count. The owner's answers arrive as user
+# messages ("[Antwort aus „Offene Fragen“ · F…]"), so without these notes the
+# extract would hold every answer but none of the questions.
+QUESTION_TOOL_RE = re.compile(r"^(?:mcp__offene-fragen(?:-desktop)?__)?(frage_setzen|frage_entfernen|fragen_uebernehmen)$")
+
+
+def question_note(kind, inp, result_text, ts):
+    """The turn for one question-list change, or None (nothing worth showing)."""
+    first = (result_text or "").strip().splitlines()[0].strip() if (result_text or "").strip() else ""
+    inp = inp if isinstance(inp, dict) else {}
+    if kind == "frage_setzen":
+        qid = str(inp.get("id") or "").strip()
+        m = re.match(r"^(F\d+) (angelegt|geändert)", first)
+        if not qid and m:
+            qid = m.group(1)
+        parts = [str(inp[k]).strip() for k in ("frage", "kurz") if inp.get(k)]
+        if inp.get("id") or (m and m.group(2) == "geändert"):
+            text = " — ".join(parts) or "(only details, recommendation or options changed)"
+            return {"role": "question_note", "kind": "changed", "qid": qid or "?", "text": text, "ts": ts}
+        return {"role": "question_note", "kind": "new", "qid": qid or "?", "text": " — ".join(parts), "ts": ts}
+    if kind == "frage_entfernen":
+        qid = str(inp.get("id") or "").strip() or (re.match(r"^(F\d+)", first).group(1) if re.match(r"^(F\d+)", first) else "?")
+        return {"role": "question_note", "kind": "closed", "qid": qid, "text": str(inp.get("grund") or "").strip(), "ts": ts}
+    if kind == "fragen_uebernehmen":
+        return {"role": "question_note", "kind": "taken_over", "qid": "", "text": first or str(inp.get("von") or ""), "ts": ts}
+    return None
+
+
+def render_question_note(turn, max_chars=0):
+    when = f" ({fmt_ts(turn['ts'], with_date=False)})" if turn.get("ts") else ""
+    label = {"new": f"new question {turn['qid']}", "changed": f"question {turn['qid']} changed",
+             "closed": f"question {turn['qid']} closed", "taken_over": "questions taken over"}[turn["kind"]]
+    return f"**Agent note{when} · {label}:** " + truncate(turn["text"], max_chars)
 AGENT_MSG_RE = re.compile(r'<agent-message from="([^"]+)">', re.DOTALL)
 TASK_ID_RE = re.compile(r"<task-id>(.*?)</task-id>", re.DOTALL)
 TOOL_USE_ID_RE = re.compile(r"<tool-use-id>(.*?)</tool-use-id>", re.DOTALL)
@@ -806,6 +842,7 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
                 del turns[k]
 
     last_mid = None
+    question_calls = {}  # tool_use id -> (tool kind, input, ts) of a pending question-list change
     peer_names = {}     # socket/address of another Claude session -> its name (from its messages)
     agent_busy = False  # True while the main agent is mid-turn (last message ended in a tool call)
     ended_text = False  # the previous entry was an assistant text message with stop_reason end_turn
@@ -896,8 +933,15 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
                     if text.strip():
                         turns.append({"role": "summary", "text": text.strip(), "ts": ts})
                 continue
-            # subagent results arriving in the main chain
+            # subagent results arriving in the main chain; results of question-list changes
             for b in blocks_of(entry):
+                if b.get("type") == "tool_result" and b.get("tool_use_id") in question_calls:
+                    kind, inp, call_ts = question_calls.pop(b["tool_use_id"])
+                    if not b.get("is_error"):
+                        qn = question_note(kind, inp, block_text(b), call_ts or ts)
+                        if qn:
+                            turns.append(qn)
+                    continue
                 if b.get("type") == "tool_result" and b.get("tool_use_id") in subagents:
                     txt = block_text(b)
                     if txt.lstrip().startswith("Async agent launched") or \
@@ -970,6 +1014,10 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
             ended_text = message.get("stop_reason") == "end_turn" and any(
                 b.get("type") == "text" and (b.get("text") or "").strip() for b in blocks)
             for b in blocks:
+                qm = QUESTION_TOOL_RE.match(b.get("name") or "") if b.get("type") == "tool_use" else None
+                if qm:
+                    question_calls[b.get("id")] = (qm.group(1), b.get("input"), ts)
+                    continue
                 if b.get("type") == "tool_use" and b.get("name") == "SendMessage":
                     inp = b.get("input") if isinstance(b.get("input"), dict) else {}
                     to = str(inp.get("to") or inp.get("recipient") or "")
@@ -1891,11 +1939,13 @@ def render_markdown(parsed, max_chars=0):
     legends = {
         "Full": "**USER MESSAGE** → **SUBAGENT** blocks (summary + full report) → **MAIN AGENT** "
                 "section (agent notes written between tool calls, user interjections, messages "
-                "exchanged with other Claude sessions, final answer)",
+                "exchanged with other Claude sessions, the agent's changes to its list of open "
+                "questions for the user, final answer)",
         "Without subagent full reports": "**USER MESSAGE** → **SUBAGENT** blocks (summary only, full "
                 "reports omitted) → **MAIN AGENT** section (agent notes, user interjections, final answer)",
         "Final answers only": "**USER MESSAGE** → **SUBAGENT** blocks (summary only) → **MAIN AGENT** "
-                "final answer (agent notes omitted)",
+                "final answer (agent notes omitted; the agent's changes to its list of open questions "
+                "for the user are kept as short notes)",
         "Minimal": "**USER MESSAGE** → **MAIN AGENT** final answer (agent notes and subagents omitted)",
         "recent": "**USER MESSAGE** → **SUBAGENT** blocks (summary only) → **MAIN AGENT** final answer; "
                   "agent notes and messages exchanged with other sessions only for the most recent "
@@ -1989,6 +2039,8 @@ def render_markdown(parsed, max_chars=0):
                     when = f" ({fmt_ts(item['ts'], with_date=False)})" if item.get("ts") else ""
                     lines.append(f"**MESSAGE TO ANOTHER CLAUDE SESSION «{item['name']}»{when}:** "
                                  + truncate(item["text"], max_chars)); lines.append("")
+                elif item["role"] == "question_note":
+                    lines.append(render_question_note(item, max_chars)); lines.append("")
                 elif item["role"] == "assistant":
                     lines.append("#### MAIN AGENT — FINAL ANSWER")
                     lines.append("")
@@ -2110,6 +2162,9 @@ def parse_targets(args, targets):
                     t["report_omitted"] = True
         if args.final_only:
             parsed["turns"] = [t for t in parsed["turns"] if t["role"] not in PEER_ROLES]
+        if getattr(args, "no_question_notes", False) or (args.final_only and args.no_subagents):
+            # Minimal: nothing but user messages and final answers
+            parsed["turns"] = [t for t in parsed["turns"] if t["role"] != "question_note"]
         notes_last = getattr(args, "notes_last", 0) or 0
         if notes_last and not args.final_only:
             # "Final answers + last N notes": drop every intermediate message (agent notes and
@@ -2262,6 +2317,23 @@ def build_session(parsed, cwd, session_id, version="2.1.0", model=None):
             if len(cmd) > 1:
                 content += f"\n<command-args>{cmd[1]}</command-args>"
             add({"type": "user", "message": {"role": "user", "content": content}}, ts)
+        elif r == "question_note":
+            # the same tool call + result the offene-fragen mod produces natively
+            tool_id = "toolu_imp" + _uuid.uuid4().hex[:21]
+            parts = t["text"].split(" — ", 1)
+            if t["kind"] == "new":
+                name, inp = "frage_setzen", {"frage": parts[0], "kurz": parts[1] if len(parts) > 1 else ""}
+                result = f"{t['qid']} angelegt."
+            elif t["kind"] == "changed":
+                name, inp = "frage_setzen", {"id": t["qid"], "frage": parts[0], "kurz": parts[1] if len(parts) > 1 else ""}
+                result = f"{t['qid']} geändert."
+            elif t["kind"] == "closed":
+                name, inp, result = "frage_entfernen", {"id": t["qid"], "grund": t["text"]}, f"{t['qid']} geschlossen."
+            else:
+                name, inp, result = "fragen_uebernehmen", {"von": "(imported)"}, t["text"]
+            assistant([{"type": "tool_use", "id": tool_id, "name": "mcp__offene-fragen__" + name, "input": inp}], ts, "tool_use")
+            add({"type": "user", "message": {"role": "user", "content": [
+                {"tool_use_id": tool_id, "type": "tool_result", "content": result}]}}, ts)
         elif r == "assistant_progress":
             assistant([{"type": "text", "text": t["text"]}], ts, "tool_use")
         elif r == "assistant":
@@ -2436,6 +2508,10 @@ def main():
     sel.add_argument("--final-only", action="store_true",
                      help="only each turn's final answer (default: also the main agent's "
                           "progress notes between tool calls)")
+    sel.add_argument("--no-question-notes", action="store_true",
+                     help="drop the short notes about the agent's changes to its list of open "
+                          "questions for the user (the offene-fragen mod); implied by Minimal "
+                          "(--final-only --no-subagents)")
     sel.add_argument("--notes-last", type=int, default=0, metavar="N",
                      help="keep only the N most recent agent notes (with --no-subagent-reports: "
                           "the detail level 'Final answers + last N notes')")

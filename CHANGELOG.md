@@ -2,6 +2,9 @@
 
 All notable changes of the context-cycle plugin. Versions are the `version` in `.claude-plugin/plugin.json`; the plugin updater only offers an update when it changes.
 
+## 1.20.0 — 2026-11-24
+- The agent's changes to its list of open questions for the owner (offene-fragen mod: `frage_setzen`, `frage_entfernen`, `fragen_uebernehmen`) appear as short agent notes at the place of the call — `**Agent note (16:05) · new question F14:** <frage> — <kurz>`, `… · question F17 changed: …` (only the fields set), `… · question F3 closed: <grund>`, `… · questions taken over: …` — never the long fields. Rejected calls and `fragen_lesen` are left out. Kept at every level except Minimal (new flag `--no-question-notes`), not counted by `--notes-last`; `create` writes them back as the same tool calls. Requested by the owner via the Mods session: since questions go only through the mod's tool, the extract held every answer but none of the questions.
+
 ## 1.19.3 — 2026-11-24
 - Post-compact instruction and skill: the detail-level question is asked even if a project rule, a memory note or a user message that arrived with the compaction seems to prescribe a level or to allow skipping it (an agent had skipped the question claiming an owner rule that did not exist). Owner's decision (F2).
 
