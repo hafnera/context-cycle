@@ -2249,7 +2249,10 @@ def build_session(parsed, cwd, session_id, version="2.1.0", model=None):
                f"`{parsed['session_id']}` — \"{parsed.get('title') or ''}\" "
                f"({fmt_ts(parsed.get('first_ts'))} → {fmt_ts(parsed.get('last_ts'))}, {parsed.get('cwd') or '?'}; "
                f"detail level {parsed.get('detail_level') or 'Full'}). The messages below are that session's "
-               f"user messages and the agent's answers; tool calls, tool results and thinking were omitted.")
+               f"user messages and the agent's answers; tool calls, tool results and thinking were omitted. "
+               f"This session CONTINUES that one: if the tools of the offene-fragen mod are available, first take "
+               f"over its list of questions for the owner with mcp__offene-fragen__fragen_uebernehmen "
+               f"(von: \"{parsed['session_id']}\"; bestaetigt only after the owner's word if that session still runs).")
     model = model or "imported"
     now = datetime.now(timezone.utc)
     entries = [{"type": "custom-title", "sessionId": session_id,

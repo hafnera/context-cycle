@@ -720,6 +720,8 @@ class QuestionNoteTests(unittest.TestCase):
                  if b.get("type") == "tool_use" and b["name"].startswith("mcp__offene-fragen__")]
         self.assertEqual([c["name"].split("__")[-1] for c in calls], ["frage_setzen", "frage_setzen", "frage_entfernen"])
         self.assertEqual(calls[1]["input"]["id"], "F14")
+        first = next(e for e in entries if e.get("type") == "user")["message"]["content"]
+        self.assertIn("fragen_uebernehmen (von: \"questions\"", first)   # the successor is told whom to take over from
         new = tmp / "sid-q.jsonl"; new.write_text("".join(json.dumps(e) + "\n" for e in entries))
         back = ex.parse_claude_session(new, cloud="off")
         self.assertEqual([t["role"] for t in back["turns"]], roles)

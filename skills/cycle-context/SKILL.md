@@ -129,6 +129,8 @@ After ingesting, tell the user in 2–4 sentences what context was imported (ses
 
 **Always report the import size.** Every extract prints an `Imported context: ~X.Xk tokens ≈ Y% of the …-token context window (model: …, this session)` line on stderr — relay exactly these numbers (tokens in k, percentage of the context window) to the user in your confirmation. The model and window are those of the **running** session, read from its transcript (`from settings` marks the fallback). `(measured)` means the exact count from the token-counting API (CLI login), `(estimated)` the calibrated estimate (~2 chars per token for Claude 5 models). If the line is missing, estimate chars/2 yourself and say so.
 
+**Open questions for the owner (offene-fragen mod):** the mod keeps one list per session id, so an imported session's questions do not follow the text. If the import is a hand-over — the user continues that session here ("continue from", "take over", "weitermachen") rather than using it as reference material — and the mod's tools are available, take over the source session's list: `mcp__offene-fragen__fragen_uebernehmen` with `von` = the source session id (from the extract header line `- **Session:**`); set `bestaetigt` only after the user's word if the source session still runs. A session created with `create` gets this instruction in its own first message.
+
 Then continue with the user's actual task, using the imported context.
 
 ## Notes
