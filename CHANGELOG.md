@@ -2,6 +2,9 @@
 
 All notable changes of the context-cycle plugin. Versions are the `version` in `.claude-plugin/plugin.json`; the plugin updater only offers an update when it changes.
 
+## 1.19.3 — 2026-11-24
+- Post-compact instruction and skill: the detail-level question is asked even if a project rule, a memory note or a user message that arrived with the compaction seems to prescribe a level or to allow skipping it (an agent had skipped the question claiming an owner rule that did not exist). Owner's decision (F2).
+
 ## 1.19.2 — 2026-11-17
 - Skill: token estimates from a post-compact instruction are only valid for the question asked right after that compaction; when the skill is invoked later (slash command, reopened session, plugin update) the agent computes fresh sizes (`-o /dev/null`) instead of copying stale numbers from the context.
 
