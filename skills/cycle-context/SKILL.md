@@ -5,7 +5,7 @@ description: Import a previous agent session or chat (Claude Code CLI, Claude De
 
 # Session Context Import
 
-Pull a previous agent session into the current conversation as **condensed context**: the user's messages, the main agent's progress notes (its short narration between tool calls) and final answer per turn, plus every subagent's result — the summary the main agent received *and* the subagent's full report, labeled with the subagent's real name (its task description). Tool calls, tool results and thinking are dropped. A multi-MB session file typically collapses to a few dozen KB.
+Pull a previous agent session into the current conversation as **condensed context**: the user's messages, the main agent's progress notes (its short narration between tool calls) and final answer per turn, the messages it exchanged with other Claude sessions, its changes to its list of open questions for the user (offene-fragen mod, as short notes), plus every subagent's result — the summary the main agent received *and* the subagent's full report, labeled with the subagent's real name (its task description). Tool calls, tool results and thinking are dropped. A multi-MB session file typically collapses to a few dozen KB.
 
 Supported sources (parsed from local disk, nothing leaves the machine):
 
