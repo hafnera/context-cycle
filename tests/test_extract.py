@@ -682,6 +682,13 @@ class QuestionNoteTests(unittest.TestCase):
                       mid="m6", stop="tool_use"),
             tool_result("r5", "a6", T3 % 8, "q5", "F14 geschlossen.\n\nProjekt · sitzung: 0 offen"),
             assistant("a7", "r5", T3 % 9, [{"type": "text", "text": "Umzug erledigt."}], mid="m7"),
+            # the mod's own take-over after /clear: a system entry, no tool call (offene-fragen 0.23.0)
+            _e("system", "s1", "a7", T3 % 10, subtype="informational", level="notice",
+               content="offene-fragen: offene-fragen: nach /clear 2 Frage(n) von kai-c5 übernommen: F1 → F4, F2 → F5. Dort sind sie als übernommen geschlossen."),
+            _e("system", "s2", "s1", T3 % 10, subtype="informational", level="notice",
+               content="offene-fragen: offene-fragen: Fenster gezeichnet auf terminal (dock, 57×43)"),
+            user("u3", "s2", T3 % 11, "Weiter."),
+            assistant("a8", "u3", T3 % 12, [{"type": "text", "text": "Ok."}], mid="m8"),
         ]
         f = tmp / "questions.jsonl"
         f.write_text("\n".join(json.dumps(l) for l in lines) + "\n")
@@ -692,9 +699,10 @@ class QuestionNoteTests(unittest.TestCase):
         parsed = ex.parse_claude_session(self.session(tmp), cloud="off")
         roles = [t["role"] for t in parsed["turns"]]
         self.assertEqual(roles, ["user", "assistant_progress", "question_note", "question_note", "assistant",
-                                 "user", "question_note", "assistant"])
+                                 "user", "question_note", "assistant", "question_note", "user", "assistant"])
         qn = [t for t in parsed["turns"] if t["role"] == "question_note"]
-        self.assertEqual([(t["kind"], t["qid"]) for t in qn], [("new", "F14"), ("changed", "F14"), ("closed", "F14")])
+        self.assertEqual([(t["kind"], t["qid"]) for t in qn], [("new", "F14"), ("changed", "F14"), ("closed", "F14"), ("taken_over_clear", "")])
+        self.assertEqual(qn[3]["text"], "2 Frage(n) von kai-c5 übernommen: F1 → F4, F2 → F5. Dort sind sie als übernommen geschlossen.")
         self.assertEqual(qn[0]["text"], "Soll X nach Y umziehen? — X liegt heute in A. Ein Umzug nach Y spart B.")
         self.assertEqual(qn[1]["text"], "X liegt heute in A; Y ist frei.")   # only what was set
         md = ex.render_markdown(parsed)
@@ -704,6 +712,8 @@ class QuestionNoteTests(unittest.TestCase):
         self.assertNotIn("## Lang", md)                      # never the long fields
         self.assertNotIn("zu lang", md)                      # rejected call left out
         self.assertNotIn("fragen_lesen", md)
+        self.assertIn("· questions taken over after /clear (by the mod):** 2 Frage(n) von kai-c5", md)
+        self.assertNotIn("Fenster gezeichnet", md)
         def run(*flags):
             return subprocess.run([sys.executable, str(SCRIPTS / "extract_session.py"), "extract", "--path",
                                    str(tmp / "questions.jsonl"), "--no-cloud", *flags], capture_output=True, text=True).stdout
@@ -720,6 +730,7 @@ class QuestionNoteTests(unittest.TestCase):
         calls = [b for e in entries if e.get("type") == "assistant" for b in e["message"]["content"]
                  if b.get("type") == "tool_use" and b["name"].startswith("mcp__offene-fragen__")]
         self.assertEqual([c["name"].split("__")[-1] for c in calls], ["frage_setzen", "frage_setzen", "frage_entfernen"])
+        self.assertEqual(sum(1 for e in entries if e.get("type") == "system" and e.get("subtype") == "informational"), 1)
         self.assertEqual(calls[1]["input"]["id"], "F14")
         first = next(e for e in entries if e.get("type") == "user")["message"]["content"]
         self.assertIn("fragen_uebernehmen (von: \"questions\"", first)   # the successor is told whom to take over from

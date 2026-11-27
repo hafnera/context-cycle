@@ -2,6 +2,9 @@
 
 All notable changes of the context-cycle plugin. Versions are the `version` in `.claude-plugin/plugin.json`; the plugin updater only offers an update when it changes.
 
+## 1.21.2 — 2026-11-27
+- Question notes: the offene-fragen mod's own take-over after `/clear` (0.23.0, ADR-0017) is a `system` entry of subtype `informational` in the new session's transcript ("offene-fragen: nach /clear <first result line>"), not a tool call; it is now rendered as `**Agent note (hh:mm) · questions taken over after /clear (by the mod):** …` and written back by `create`. The mod's other informational lines (window drawn) are ignored. `fragen_uebernehmen`'s first result line may end with "Wartende Antworten: …" (0.23.0); the note shows it unchanged.
+
 ## 1.21.1 — 2026-11-27
 - Hand-over cycle: new config key `sessions` maps the **exact session title** to the hand-over file and wins over the directory keys — several sessions often share one working directory (all Kai roles run with `~/Coding/Kai` as cwd and work in their worktrees by absolute path), so the directory name alone would hit every role. Precedence: `sessions` → `handovers` → `handover` → off. PostToolUse and Stop hooks read the title from the transcript's `custom-title` entries through an incremental cache (`~/.cache/context-cycle/titles/`), so large transcripts are not rescanned per tool call. Joint probe with the Kai operations session passed (worktree `Kai-probe`): both project blocks and the predecessor offer arrive after `/clear`, the name stays, the Stop hook made the agent rewrite and commit the hand-over, the project's commit reminder fires.
 

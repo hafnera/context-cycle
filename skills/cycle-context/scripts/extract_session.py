@@ -423,6 +423,10 @@ NOTE_ROLES = ("assistant_progress",) + PEER_ROLES    # everything "Final answers
 # messages ("[Antwort aus „Offene Fragen“ · F…]"), so without these notes the
 # extract would hold every answer but none of the questions.
 QUESTION_TOOL_RE = re.compile(r"^(?:mcp__offene-fragen(?:-desktop)?__)?(frage_setzen|frage_entfernen|fragen_uebernehmen)$")
+# After /clear the mod takes the predecessor's list over by itself (offene-fragen
+# 0.23.0, ADR-0017) and writes a system entry (subtype "informational") into the
+# new session's transcript: "offene-fragen: nach /clear <first result line>".
+MOD_CLEAR_RE = re.compile(r"^(?:offene-fragen:\s*)+nach /clear\s+(.+)$", re.S)
 
 
 def question_note(kind, inp, result_text, ts):
@@ -450,7 +454,8 @@ def question_note(kind, inp, result_text, ts):
 def render_question_note(turn, max_chars=0):
     when = f" ({fmt_ts(turn['ts'], with_date=False)})" if turn.get("ts") else ""
     label = {"new": f"new question {turn['qid']}", "changed": f"question {turn['qid']} changed",
-             "closed": f"question {turn['qid']} closed", "taken_over": "questions taken over"}[turn["kind"]]
+             "closed": f"question {turn['qid']} closed", "taken_over": "questions taken over",
+             "taken_over_clear": "questions taken over after /clear (by the mod)"}[turn["kind"]]
     return f"**Agent note{when} · {label}:** " + truncate(turn["text"], max_chars)
 AGENT_MSG_RE = re.compile(r'<agent-message from="([^"]+)">', re.DOTALL)
 TASK_ID_RE = re.compile(r"<task-id>(.*?)</task-id>", re.DOTALL)
@@ -864,6 +869,12 @@ def parse_claude_entries(entries, meta, all_text=True, session_path=None):
             continue
         if etype == "custom-title" and entry.get("customTitle"):
             meta["title"] = meta["title"] or snippet(entry["customTitle"])
+            continue
+        if etype == "system" and entry.get("subtype") == "informational":
+            mc = MOD_CLEAR_RE.match(str(entry.get("content") or "").strip())
+            if mc:
+                turns.append({"role": "question_note", "kind": "taken_over_clear", "qid": "",
+                              "text": mc.group(1).strip(), "ts": ts})
             continue
         if etype == "user" and entry.get("isSynthetic") and not entry.get("parent_tool_use_id"):
             # synthetic hand-back of a background subagent (cloud streams)
@@ -2320,6 +2331,9 @@ def build_session(parsed, cwd, session_id, version="2.1.0", model=None):
             if len(cmd) > 1:
                 content += f"\n<command-args>{cmd[1]}</command-args>"
             add({"type": "user", "message": {"role": "user", "content": content}}, ts)
+        elif r == "question_note" and t["kind"] == "taken_over_clear":
+            add({"type": "system", "subtype": "informational", "level": "notice", "isMeta": False,
+                 "content": "offene-fragen: nach /clear " + t["text"]}, ts)
         elif r == "question_note":
             # the same tool call + result the offene-fragen mod produces natively
             tool_id = "toolu_imp" + _uuid.uuid4().hex[:21]
