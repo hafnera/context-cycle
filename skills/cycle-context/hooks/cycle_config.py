@@ -8,10 +8,12 @@ in the working directory (the worktree the session runs in):
       "cycle": "clear",                       # or "compact" (default)
       "handover": "docs/roles/{dir}.md",      # path relative to cwd; {dir} = cwd
                                               # basename, {title} = session title slug
+      "sessions": {"KAI - DMS": "../Kai-dms/docs/roles/dms.md"},
+                                              # map by exact session title (several
+                                              # sessions often share one cwd); wins
       "handovers": {"kai-portale": "docs/roles/portale.md", "*": "docs/roles/{dir}.md"},
-                                              # optional map by cwd basename or session
-                                              # title; "*" is the fallback; wins over
-                                              # "handover" when a key matches
+                                              # map by cwd basename or session title;
+                                              # "*" is the fallback; wins over "handover"
       "load": "plugin",                       # "plugin": the SessionStart hook injects the
                                               # hand-over file itself; "project": the
                                               # project's own hook loads it, the plugin
@@ -44,6 +46,7 @@ CONFIG_NAME = ".claude/context-cycle.json"
 DEFAULT_STAMP = r"^Stand: (\d{2}\.\d{2}\.\d{4}(?: \d{2}:\d{2})?)"
 STAMP_FORMATS = ("%d.%m.%Y %H:%M", "%d.%m.%Y", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%Y-%m-%dT%H:%M")
 REGISTRY_DIR = Path(os.environ.get("CONTEXT_CYCLE_REGISTRY") or (Path.home() / ".cache" / "context-cycle" / "pids"))
+TITLE_CACHE_DIR = REGISTRY_DIR.parent / "titles"
 MAX_INJECT_CHARS = 9_500  # Claude Code replaces hook output above ~10k chars with a preview
 
 
@@ -74,16 +77,36 @@ def slug(text):
 
 def session_title(hook_input, transcript_path=None):
     """The session's custom title: from the hook input when present (SessionStart,
-    UserPromptSubmit), else the last custom-title entry of the transcript."""
+    UserPromptSubmit), else the last custom-title entry of the transcript. The
+    transcript scan is incremental (PostToolUse and Stop fire often, transcripts
+    reach hundreds of MB): a cache per transcript keeps the title and the offset
+    already scanned, so each call reads only what was appended since."""
     title = hook_input.get("session_title") if hook_input else None
     if title:
         return str(title)
     path = transcript_path or (hook_input or {}).get("transcript_path")
     if not path or not Path(path).is_file():
         return None
-    last = None
+    size = Path(path).stat().st_size
+    cache_file = TITLE_CACHE_DIR / (Path(path).stem + ".json")
+    cached = {"title": None, "offset": 0}
+    try:
+        data = json.loads(cache_file.read_text())
+        if isinstance(data, dict) and data.get("offset", 0) <= size:
+            cached = data
+    except (OSError, ValueError):
+        pass
+    if cached["offset"] >= size:
+        return cached["title"]
+    last = cached["title"]
     try:
         with open(path, "rb") as f:
+            if cached["offset"]:
+                f.seek(cached["offset"] - 1)
+                if f.read(1) != b"\n":
+                    f.readline()  # the offset sat inside a line (file was mid-write): skip its rest
+            else:
+                f.seek(0)
             for raw in f:
                 if b'"customTitle"' not in raw:
                     continue
@@ -94,7 +117,12 @@ def session_title(hook_input, transcript_path=None):
                 if entry.get("customTitle"):
                     last = str(entry["customTitle"])
     except OSError:
-        return None
+        return last
+    try:
+        TITLE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps({"title": last, "offset": size}))
+    except OSError:
+        pass
     return last
 
 
@@ -107,8 +135,11 @@ def handover_path(config, hook_input=None, title=None):
     if title is None:
         title = session_title(hook_input or {})
     template = None
+    sessions = config.get("sessions")   # by exact session title: several sessions share one cwd
+    if isinstance(sessions, dict) and title and sessions.get(title):
+        template = str(sessions[title])
     handovers = config.get("handovers")
-    if isinstance(handovers, dict):
+    if template is None and isinstance(handovers, dict):
         for key in (dir_name, title, "*"):
             if key and key in handovers and handovers[key]:
                 template = str(handovers[key])

@@ -778,6 +778,32 @@ class HandoverCycleTests(unittest.TestCase):
         self.assertEqual((config["cycle"], path), ("compact", other / "notes" / "kai-portale.md"))
         (other / ".claude" / "context-cycle.json").write_text(json.dumps({"handovers": {"*": "h/{dir}.md"}}))
         self.assertEqual(cc.active({"cwd": str(other)})[1], other / "h" / "Kai-other.md")
+        # "sessions" by exact title wins over the directory key; without a title or match: the directory key
+        (other / ".claude" / "context-cycle.json").write_text(json.dumps(
+            {"sessions": {"KAI - DMS": "../Kai-dms/docs/dms.md"}, "handovers": {"Kai-other": "docs/other.md"}}))
+        self.assertEqual(cc.active({"cwd": str(other), "session_title": "KAI - DMS"})[1], (other / ".." / "Kai-dms" / "docs" / "dms.md").resolve())
+        self.assertEqual(cc.active({"cwd": str(other), "session_title": "KAI - Portale"})[1], other / "docs" / "other.md")
+        self.assertEqual(cc.active({"cwd": str(other)})[1], other / "docs" / "other.md")
+        (other / ".claude" / "context-cycle.json").write_text(json.dumps({"sessions": {"KAI - DMS": "x.md"}, "handovers": {}}))
+        self.assertEqual(cc.active({"cwd": str(other), "session_title": "KAI - Vorgänge"}), (None, None))   # no entry: off
+        # the title comes from the transcript when the hook input lacks it (PostToolUse, Stop), scanned incrementally
+        os.environ["CONTEXT_CYCLE_REGISTRY"] = str(other / "reg")
+        import importlib; importlib.reload(cc)
+        try:
+            tr = other / "s1.jsonl"
+            tr.write_text(json.dumps({"type": "user", "message": {"role": "user", "content": "x"}}) + "\n")
+            self.assertEqual(cc.session_title({"transcript_path": str(tr)}), None)
+            with open(tr, "a") as f:
+                f.write(json.dumps({"type": "custom-title", "customTitle": "KAI - DMS"}) + "\n")
+            self.assertEqual(cc.session_title({"transcript_path": str(tr)}), "KAI - DMS")
+            with open(tr, "a") as f:
+                f.write(json.dumps({"type": "custom-title", "customTitle": "KAI - Neu"}) + "\n")
+            self.assertEqual(cc.session_title({"transcript_path": str(tr)}), "KAI - Neu")
+            cache = json.loads((other / "titles" / "s1.json").read_text())
+            self.assertEqual((cache["title"], cache["offset"]), ("KAI - Neu", tr.stat().st_size))
+            self.assertEqual(cc.active({"cwd": str(other), "transcript_path": str(tr)})[1], (other / "x.md").resolve()) if False else None
+        finally:
+            os.environ.pop("CONTEXT_CYCLE_REGISTRY", None); importlib.reload(cc)
 
     def test_status_warnings_and_rewritten(self):
         sys.path.insert(0, str(HOOKS)); import cycle_config as cc

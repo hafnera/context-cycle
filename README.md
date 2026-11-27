@@ -78,7 +78,8 @@ By default the cycle is *checkpoint → `/compact` → restore the history*. A p
 ```json
 {
   "cycle": "clear",
-  "handovers": {"Kai-dms": "docs/roles/dms.md", "Kai": "docs/roles/operations.md"},
+  "sessions": {"KAI - DMS": "../Kai-dms/docs/roles/dms.md", "KAI - Betrieb": "docs/roles/operations.md"},
+  "handovers": {"Kai-dms": "docs/roles/dms.md"},
   "load": "project"
 }
 ```
@@ -87,7 +88,8 @@ By default the cycle is *checkpoint → `/compact` → restore the history*. A p
 |---|---|
 | `cycle` | `clear` (restart with `/clear`) or `compact` (default: as today, plus the hand-over) |
 | `handover` | path of the hand-over file relative to the working directory; placeholders `{dir}` (directory name) and `{title}` (session title as a slug) |
-| `handovers` | map by directory name or session title; `"*"` is the fallback; wins over `handover`. No matching key and no `"*"`: the cycle is off in that directory |
+| `sessions` | map by **exact session title** (`/rename`); several sessions often share one working directory, so this wins over everything else. Paths are relative to the working directory, so sibling worktrees work with `../` |
+| `handovers` | map by directory name or session title; `"*"` is the fallback; wins over `handover`. No matching entry in `sessions`, `handovers` or `handover`: the cycle is off for that session |
 | `load` | `plugin` (default: the SessionStart hook injects the hand-over itself, up to ~9.5k chars) or `project` (the project's own hook loads it; the plugin reports only path, stamp and warnings and skips the git comparison) |
 | `stamp` | optional regex with one group holding the stamp (default `^Stand: (DD.MM.YYYY[ HH:MM])`); without a match the file's mtime counts |
 
@@ -98,7 +100,7 @@ What the hooks then do:
 - **Session start (startup, resume, clear, fork):** path, stamp, last change and warnings of the hand-over (missing file, stamp older than the file by more than a day, with `load: plugin` also "older than the newest commit"); after `/clear` the previous session of the same Claude Code process is **offered** (title, id, transcript size), never imported — if the user asks, the skill asks the detail level as usual.
 - **`/compact`** keeps working exactly as today (detail-level question and import), with a hint that the hand-over is the primary source.
 
-The predecessor after `/clear` is identified through the process: the PostToolUse hook records the session under the Claude Code process id in `~/.cache/context-cycle/pids/`; `/clear` keeps the process. Open questions for the owner (offene-fragen mod) follow by the mod's own take-over.
+The session title reaches the PostToolUse and Stop hooks through the transcript (its `custom-title` entries), scanned incrementally with a small cache under `~/.cache/context-cycle/titles/`; SessionStart gets it from Claude Code directly. The predecessor after `/clear` is identified through the process: the PostToolUse hook records the session under the Claude Code process id in `~/.cache/context-cycle/pids/`; `/clear` keeps the process. Open questions for the owner (offene-fragen mod) follow by the mod's own take-over.
 
 ## Mac app (optional)
 
