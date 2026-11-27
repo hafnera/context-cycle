@@ -29,6 +29,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cycle_config  # noqa: E402
+
 # RESTORE_MODE:
 #   "ask"  (default) — inject a short instruction with token estimates of the
 #            four detail levels; the agent then asks the user (question card)
@@ -80,8 +83,15 @@ def build_ask_text(hook_input):
         return sizes[key]
     rows = [f"- {label}: {size_of(flags)}" + (f"  (flags: {' '.join(flags)})" if flags else "  (no flags)")
             for label, flags in DETAIL_LEVELS]
+    config, handover = cycle_config.active(hook_input)
+    handover_hint = ""
+    if config:
+        status = cycle_config.handover_status(config, handover)
+        handover_hint = ("This project runs the hand-over cycle of context-cycle. The hand-over file is the "
+                         "primary source of the current state; the history import below is additional. "
+                         + cycle_config.describe(status).replace("\n", " ") + "\n")
     notes = [f"- {label} notes: {size_of(flags)}  (flags: {' '.join(flags)})" for label, flags in NOTES_OPTIONS]
-    return ("The context was just compacted. The full history of this session is still "
+    return (handover_hint + "The context was just compacted. The full history of this session is still "
             "on disk and can be restored with the cycle-context skill. BEFORE doing anything "
             "else, ask the user with AskUserQuestion which detail level to import (the four cards "
             "with labels and descriptions exactly as in the cycle-context skill; recommend Full), "

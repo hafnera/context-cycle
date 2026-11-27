@@ -206,6 +206,16 @@
             "timeout": 90
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/cycle-context/hooks/on_session_start.py\"",
+            "timeout": 20,
+            "statusMessage": "context-cycle: hand-over status"
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -214,6 +224,17 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/cycle-context/hooks/pre_compact_docs_reminder.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/cycle-context/hooks/on_stop.py\"",
             "timeout": 10
           }
         ]

@@ -71,6 +71,35 @@ The agent never reduces on its own; `--last N` / `--max-chars N` are likewise on
 
 Per user turn: `## USER MESSAGE` → `### SUBAGENT «name»` blocks (summary as received, then "Here is the full report …", closed by an end marker) → `### MAIN AGENT` section with `**Agent note (time)**` paragraphs, `USER INTERJECTION` for messages you typed while the agent was working, `MESSAGE FROM/TO ANOTHER CLAUDE SESSION` for messages the agent exchanged with other Claude sessions (cross-session messaging; they count as intermediate messages like the notes and never end a turn), `**Agent note (time) · new question F14:**` / `question F17 changed` / `question F3 closed` / `questions taken over` for the agent's changes to its list of open questions for you (id, question and summary only), and `#### MAIN AGENT — FINAL ANSWER`. If the agent answered, then continued after subagent reports arrived, the earlier answer is labeled as such; a message from another session does not create such a boundary. Slash commands (`*User ran:*`), interruptions and hook-triggered follow-ups (`*[…]*`) stay as one-line markers. Headings inside embedded content are demoted so they can never be mistaken for the transcript's structure. A legend at the top names the detail level.
 
+## Hand-over cycle (optional, per project)
+
+By default the cycle is *checkpoint → `/compact` → restore the history*. A project can switch to *checkpoint → hand-over file → `/clear`* instead, where a fresh session starts from a short hand-over document and the old history is only an emergency reserve. Switch it on with `.claude/context-cycle.json` in the working directory (the worktree the session runs in); without the file, or without an entry for the directory, nothing changes anywhere:
+
+```json
+{
+  "cycle": "clear",
+  "handovers": {"Kai-dms": "docs/roles/dms.md", "Kai": "docs/roles/operations.md"},
+  "load": "project"
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `cycle` | `clear` (restart with `/clear`) or `compact` (default: as today, plus the hand-over) |
+| `handover` | path of the hand-over file relative to the working directory; placeholders `{dir}` (directory name) and `{title}` (session title as a slug) |
+| `handovers` | map by directory name or session title; `"*"` is the fallback; wins over `handover`. No matching key and no `"*"`: the cycle is off in that directory |
+| `load` | `plugin` (default: the SessionStart hook injects the hand-over itself, up to ~9.5k chars) or `project` (the project's own hook loads it; the plugin reports only path, stamp and warnings and skips the git comparison) |
+| `stamp` | optional regex with one group holding the stamp (default `^Stand: (DD.MM.YYYY[ HH:MM])`); without a match the file's mtime counts |
+
+What the hooks then do:
+
+- **80 % (PostToolUse):** the checkpoint additionally orders the hand-over file to be written completely (running task and state, agreements with other sessions, what lies with the user, numbered next steps, fresh pitfalls), its stamp updated and committed with the work, and asks the user for `/clear` (or `/compact`).
+- **End of turn (Stop):** if the hand-over was not rewritten since that order (mtime or stamp), the turn continues with the feedback to write it first — at most twice per cycle.
+- **Session start (startup, resume, clear, fork):** path, stamp, last change and warnings of the hand-over (missing file, stamp older than the file by more than a day, with `load: plugin` also "older than the newest commit"); after `/clear` the previous session of the same Claude Code process is **offered** (title, id, transcript size), never imported — if the user asks, the skill asks the detail level as usual.
+- **`/compact`** keeps working exactly as today (detail-level question and import), with a hint that the hand-over is the primary source.
+
+The predecessor after `/clear` is identified through the process: the PostToolUse hook records the session under the Claude Code process id in `~/.cache/context-cycle/pids/`; `/clear` keeps the process. Open questions for the owner (offene-fragen mod) follow by the mod's own take-over.
+
 ## Mac app (optional)
 
 [`app/`](app/) contains **Context Cycle.app**, a small native macOS front end (SwiftUI, no dependencies) for the same extractor: pick a project directory (or the claude.ai chats / cloud sessions), see its sessions with date, message count, size and title, filter by title, and copy a selected session **as a new Claude Code session into another project** (choosing the detail level with per-level token estimates and the target directory; the app then shows the `claude --resume` command) or **save its extract as a Markdown file**. The app drives the newest installed plugin copy of `extract_session.py` (fallback: the copy bundled at build time) with `python3`.

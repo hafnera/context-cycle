@@ -17,6 +17,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
@@ -727,6 +728,152 @@ class QuestionNoteTests(unittest.TestCase):
         self.assertEqual([t["role"] for t in back["turns"]], roles)
         self.assertEqual([(t["kind"], t["qid"], t["text"]) for t in back["turns"] if t["role"] == "question_note"],
                          [(t["kind"], t["qid"], t["text"]) for t in qn])
+
+
+class HandoverCycleTests(unittest.TestCase):
+    """The per-project hand-over cycle (.claude/context-cycle.json): config
+    resolution, hand-over status, and the three hooks around it. Without the
+    file every hook stays silent."""
+
+    def repo(self):
+        tmp = Path(tempfile.mkdtemp()).resolve() / "Kai-dms"
+        (tmp / ".claude").mkdir(parents=True); (tmp / "docs").mkdir()
+        env = dict(os.environ, GIT_AUTHOR_DATE="2026-11-20T10:00:00", GIT_COMMITTER_DATE="2026-11-20T10:00:00")
+        subprocess.run(["git", "init", "-q"], cwd=tmp, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=tmp, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=tmp, check=True)
+        (tmp / "docs" / "dms.md").write_text("# Rolle DMS\nStand: 20.11.2026 10:00 · abc1234\n\n## Übergabe\n- läuft\n")
+        (tmp / ".claude" / "context-cycle.json").write_text(json.dumps(
+            {"cycle": "clear", "handovers": {"Kai-dms": "docs/dms.md"}, "load": "plugin"}))
+        subprocess.run(["git", "add", "-A"], cwd=tmp, check=True)
+        subprocess.run(["git", "commit", "-qm", "blatt"], cwd=tmp, check=True, env=env)
+        return tmp
+
+    def commit_work(self, tmp, when="2026-11-26T09:00:00"):
+        (tmp / "work.txt").write_text("x")
+        env = dict(os.environ, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when)
+        subprocess.run(["git", "add", "-A"], cwd=tmp, check=True)
+        subprocess.run(["git", "commit", "-qm", "work"], cwd=tmp, check=True, env=env)
+
+    def hook(self, name, payload, env=None):
+        r = subprocess.run([sys.executable, str(HOOKS / name)], input=json.dumps(payload), capture_output=True,
+                           text=True, env=dict(os.environ, CONTEXT_CYCLE_NO_API="1", **(env or {})))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout
+
+    def test_config_resolution(self):
+        sys.path.insert(0, str(HOOKS)); import cycle_config as cc
+        tmp = self.repo()
+        config, path = cc.active({"cwd": str(tmp)})
+        self.assertEqual((config["cycle"], config["load"]), ("clear", "plugin"))
+        self.assertEqual(path, tmp / "docs" / "dms.md")
+        # a directory without a matching key and without "*": the cycle is off there
+        other = tmp.parent / "Kai-other"; (other / ".claude").mkdir(parents=True)
+        (other / ".claude" / "context-cycle.json").write_text((tmp / ".claude" / "context-cycle.json").read_text())
+        self.assertEqual(cc.active({"cwd": str(other)}), (None, None))
+        self.assertEqual(cc.active({"cwd": str(tmp.parent)}), (None, None))      # no config at all
+        # "handover" with {title}, and "*" as fallback
+        (other / ".claude" / "context-cycle.json").write_text(json.dumps({"handover": "notes/{title}.md"}))
+        config, path = cc.active({"cwd": str(other), "session_title": "KAI - Portale"})
+        self.assertEqual((config["cycle"], path), ("compact", other / "notes" / "kai-portale.md"))
+        (other / ".claude" / "context-cycle.json").write_text(json.dumps({"handovers": {"*": "h/{dir}.md"}}))
+        self.assertEqual(cc.active({"cwd": str(other)})[1], other / "h" / "Kai-other.md")
+
+    def test_status_warnings_and_rewritten(self):
+        sys.path.insert(0, str(HOOKS)); import cycle_config as cc
+        tmp = self.repo()
+        config, path = cc.active({"cwd": str(tmp)})
+        st = cc.handover_status(config, path)
+        self.assertTrue(st["exists"]); self.assertEqual(st["stamp"].strftime("%d.%m.%Y %H:%M"), "20.11.2026 10:00")
+        self.assertFalse([w for w in st["warnings"] if "older than the newest commit" in w])
+        self.commit_work(tmp)
+        st = cc.handover_status(config, path)
+        self.assertTrue([w for w in st["warnings"] if "older than the newest commit" in w], st["warnings"])
+        config["load"] = "project"                     # the project judges staleness itself
+        self.assertFalse([w for w in cc.handover_status(config, path)["warnings"] if "commit" in w])
+        self.assertTrue(cc.rewritten_since(config, path, 0))
+        self.assertFalse(cc.rewritten_since(config, path, time.time() + 10))
+        st = cc.handover_status(config, tmp / "docs" / "missing.md")
+        self.assertFalse(st["exists"]); self.assertIn("missing", st["warnings"][0])
+
+    def test_session_start_hook(self):
+        tmp = self.repo(); self.commit_work(tmp)
+        base = {"session_id": "new1", "transcript_path": "/nonexistent", "cwd": str(tmp)}
+        out = self.hook("on_session_start.py", dict(base, source="startup"))
+        self.assertIn("Hand-over file:", out); self.assertIn("# Rolle DMS", out)      # load plugin injects it
+        self.assertIn("older than the newest commit", out)
+        self.assertNotIn("Previous session", out)
+        reg = tmp.parent / "registry"; reg.mkdir()
+        pred = tmp.parent / "old.jsonl"
+        pred.write_text(json.dumps({"type": "custom-title", "customTitle": "KAI - DMS"}) + "\n")
+        (reg / "4242.json").write_text(json.dumps({"session_id": "old1", "transcript_path": str(pred), "cwd": str(tmp), "ts": time.time()}))
+        env = {"CONTEXT_CYCLE_REGISTRY": str(reg), "CONTEXT_CYCLE_CLAUDE_PID": "4242"}
+        out = self.hook("on_session_start.py", dict(base, source="clear"), env)
+        self.assertIn("Previous session of this process", out); self.assertIn("«KAI - DMS» (id old1", out)
+        self.assertIn("do NOT import it unasked", out); self.assertIn(f'extract --path "{pred}"', out)
+        out = self.hook("on_session_start.py", dict(base, source="clear"), {"CONTEXT_CYCLE_REGISTRY": str(reg), "CONTEXT_CYCLE_CLAUDE_PID": "4243"})
+        self.assertIn("Previous session: not identified", out)
+        self.assertEqual(self.hook("on_session_start.py", dict(base, source="compact")), "")
+        cfg = tmp / ".claude" / "context-cycle.json"
+        cfg.write_text(json.dumps({"cycle": "clear", "handovers": {"Kai-dms": "docs/dms.md"}, "load": "project"}))
+        out = self.hook("on_session_start.py", dict(base, source="clear"))
+        self.assertNotIn("# Rolle DMS", out); self.assertIn("project's own hook loads", out)
+        self.assertNotIn("older than the newest commit", out)
+        cfg.unlink()
+        self.assertEqual(self.hook("on_session_start.py", dict(base, source="clear")), "")   # cycle off
+
+    def test_checkpoint_reminder_and_stop_hook(self):
+        tmp = self.repo()
+        sid = "cycle-test-" + os.urandom(4).hex()
+        marker = Path("/tmp") / f"claude-doc-reminder-{sid}"
+        transcript = tmp / "t.jsonl"
+        usage = {"input_tokens": 170000, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "output_tokens": 10}
+        transcript.write_text(json.dumps({"type": "assistant", "message": {"model": "claude-opus-4-8", "usage": usage,
+                                                                           "content": [{"type": "text", "text": "x"}]}}) + "\n")
+        payload = {"session_id": sid, "transcript_path": str(transcript), "cwd": str(tmp), "hook_event_name": "PostToolUse"}
+        reg = tmp.parent / "registry"; reg.mkdir()
+        os.environ["CONTEXT_CYCLE_REGISTRY"] = str(reg); os.environ["CONTEXT_CYCLE_CLAUDE_PID"] = "4242"
+        try:
+            out = json.loads(self.hook("pre_compact_docs_reminder.py", payload))
+            self.assertEqual(json.loads((reg / "4242.json").read_text())["session_id"], sid)   # process registry
+            text = out["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("HAND-OVER file", text); self.assertIn("run /clear", text); self.assertNotIn("run /compact", text)
+            self.assertIn(str(tmp / "docs" / "dms.md"), text)
+            state = json.loads(marker.read_text()); self.assertEqual(state["cycle"], "clear"); self.assertIn("ts", state)
+            # the hand-over was not rewritten: the Stop hook continues the turn, at most twice
+            stop = {"session_id": sid, "cwd": str(tmp), "stop_hook_active": False}
+            fb = json.loads(self.hook("on_stop.py", stop))["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("was NOT rewritten", fb); self.assertIn("run /clear", fb)
+            self.assertIn("was NOT rewritten", self.hook("on_stop.py", stop))
+            self.assertEqual(self.hook("on_stop.py", stop), "")
+            # rewritten (mtime after the order): silent
+            marker.write_text(json.dumps(dict(json.loads(marker.read_text()), nags=0)))
+            time.sleep(0.05); (tmp / "docs" / "dms.md").write_text("# Rolle DMS\nStand: 27.11.2026 12:00 · def5678\n")
+            self.assertEqual(self.hook("on_stop.py", stop), "")
+            # classic cycle (no config): plain reminder, Stop hook silent
+            marker.unlink(); (tmp / ".claude" / "context-cycle.json").unlink()
+            text = json.loads(self.hook("pre_compact_docs_reminder.py", payload))["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("run /compact", text); self.assertNotIn("HAND-OVER", text)
+            self.assertEqual(self.hook("on_stop.py", stop), "")
+        finally:
+            marker.unlink(missing_ok=True)
+            os.environ.pop("CONTEXT_CYCLE_REGISTRY", None); os.environ.pop("CONTEXT_CYCLE_CLAUDE_PID", None)
+
+    def test_compact_hint(self):
+        tmp = self.repo()
+        transcript = tmp / "t.jsonl"
+        transcript.write_text(json.dumps(user("u1", None, T % 0, "Hallo")) + "\n" +
+                              json.dumps(assistant("a1", "u1", T % 1, [{"type": "text", "text": "Hi."}])) + "\n")
+        payload = {"session_id": "c1", "transcript_path": str(transcript), "cwd": str(tmp), "source": "compact"}
+        r = subprocess.run([sys.executable, str(HOOKS / "on_compact.py"), "--part", "1", "--parts", "40"],
+                           input=json.dumps(payload), capture_output=True, text=True,
+                           env=dict(os.environ, CONTEXT_CYCLE_NO_API="1"))
+        self.assertIn("hand-over cycle", r.stdout); self.assertIn("ask the user with AskUserQuestion", r.stdout)
+        (tmp / ".claude" / "context-cycle.json").unlink()
+        r = subprocess.run([sys.executable, str(HOOKS / "on_compact.py"), "--part", "1", "--parts", "40"],
+                           input=json.dumps(payload), capture_output=True, text=True,
+                           env=dict(os.environ, CONTEXT_CYCLE_NO_API="1"))
+        self.assertNotIn("hand-over", r.stdout); self.assertIn("ask the user with AskUserQuestion", r.stdout)
 
 
 class ModelDetectionTests(unittest.TestCase):

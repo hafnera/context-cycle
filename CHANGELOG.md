@@ -2,6 +2,9 @@
 
 All notable changes of the context-cycle plugin. Versions are the `version` in `.claude-plugin/plugin.json`; the plugin updater only offers an update when it changes.
 
+## 1.21.0 — 2026-11-27
+- **Hand-over cycle (opt-in per project):** `.claude/context-cycle.json` in the working directory switches from *checkpoint → /compact → history restore* to *checkpoint → hand-over file → /clear* for that directory (`cycle`, `handover`/`handovers` with `{dir}`/`{title}`, `load` plugin|project, `stamp`). At 80 % the checkpoint also orders the hand-over file to be written completely and committed and asks for `/clear` (or `/compact`); a new Stop hook continues the turn (≤ 2×) until the file was rewritten; a new SessionStart hook (startup, resume, clear, fork) reports the hand-over with warnings (missing, stamp older than the file by a day, with `load: plugin` also older than the newest commit) and, after `/clear`, offers the previous session of the same Claude Code process (found through a process → session registry the PostToolUse hook keeps under `~/.cache/context-cycle/pids/`) without importing it. `/compact` keeps working as before, plus a hint. Without the file, or without an entry for the directory, nothing changes. Agreed with the Kai operations session on the owner's draft of 2026-11-27.
+
 ## 1.20.2 — 2026-11-24
 - Docs only: README, architecture doc and the skill's introduction describe the current extract contents (messages exchanged with other sessions, question-list notes), the turn model, the restore hook's rules (ask regardless of standing rules, recompute stale sizes), the take-over of question lists and the restart needed after a plugin update.
 

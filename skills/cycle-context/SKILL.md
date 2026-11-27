@@ -113,6 +113,10 @@ python3 "<skill>/scripts/extract_session.py" extract --current
 
 This resolves to the most recently written session file of the current project, which is the running session (its jsonl retains the full history even after compaction). Read the output, then give the user a short recap of the session so far: original goal, key decisions, current state, open points. If two sessions of this project run in parallel, verify the extract matches this conversation and fall back to an explicit id if not. The full-extract rule applies here too: no `--last`/`--max-chars` unless the user asked.
 
+### Special case: after `/clear` in a project with the hand-over cycle
+
+Projects that run the plugin's hand-over cycle (`.claude/context-cycle.json`) restart with `/clear` instead of `/compact`. The SessionStart hook then reports the hand-over file (the primary source of the current state) and **offers** the previous session's history with its transcript path — it is an emergency reserve. Do not import it unasked. If the user asks for it, run this skill on that transcript (`extract --path <transcript>` after the detail-level question from step 2, sizes computed fresh).
+
 ### Special case: CREATE a new session in another project from an extract
 
 When the user wants a session of project A to become a **real session in project B** ("erstelle aus der Session X eine neue Session in Projekt B", "move/copy this session into ~/Coding/B"): find the source session as in step 1, ask the detail level as in step 2 (the chosen flags apply), then run

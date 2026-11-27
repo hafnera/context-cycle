@@ -26,7 +26,11 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cycle_config  # noqa: E402
 
 REMIND_FRACTION = float(os.environ.get("DOC_REMINDER_FRACTION", "0.8"))
 # Context dropping below RESET_FRACTION * threshold means compaction happened.
@@ -59,6 +63,42 @@ REMINDER = (
     "- the explicit request that the user should now run /compact.\n"
     "You cannot trigger /compact yourself — do not try. Wait for the user."
 )
+
+# The same checkpoint in a project that runs the hand-over cycle
+# (.claude/context-cycle.json, see cycle_config.py): the hand-over file is
+# written completely and committed; the session then restarts with /clear
+# (or /compact, if the project chose that cycle) and the history is only an
+# emergency reserve the user asks for.
+HANDOVER_REMINDER = (
+    "Context checkpoint: this session is at ~{tokens_k}k of the {window_k}k-token "
+    "{basis} ({pct}%). This project runs the hand-over cycle of context-cycle: BEFORE "
+    "continuing with the current task, do the checkpoint NOW:\n"
+    "1. Bring ALL project documentation up to date — README, CLAUDE.md, docs/, skill "
+    "files, knowledge-base notes, AND architecture documentation.\n"
+    "2. Persist LEARNINGS FROM MISTAKES made in this session (what went wrong, root "
+    "cause, the rule that prevents it) in the project's docs/knowledge base.\n"
+    "3. Finish or checkpoint any half-done edits.\n"
+    "4. Write the HAND-OVER file {handover} COMPLETELY, following its template: the "
+    "running task and its exact state (commit, uncommitted files, running background "
+    "jobs with the command that checks them), agreements with other sessions (who waits "
+    "for what), what lies with the user (question ids only), the NEXT STEPS numbered and "
+    "concrete enough to resume from them alone, fresh pitfalls not yet in the docs. Update "
+    "its stamp line{stamp_hint} and COMMIT it together with the work it describes. A hook "
+    "checks at the end of your turn that the file was rewritten.\n"
+    "When the checkpoint is complete, do NOT continue with the task. END your turn with a "
+    "final message to the user that contains:\n"
+    "- a short confirmation of the checkpoint (what was updated, the hand-over's commit),\n"
+    "- a condensed summary of the RELEVANT findings from the last tool result (key facts "
+    "only — tool results do not survive the restart),\n"
+    "- the numbered NEXT STEPS (the same as in the hand-over),\n"
+    "- the explicit request that the user should now run {command}.\n"
+    "{after}"
+    "You cannot trigger {command} yourself — do not try. Wait for the user."
+)
+AFTER_CLEAR = ("After /clear the new session gets the hand-over automatically; the history of "
+               "this session stays on disk and is imported only if the user asks for it.\n")
+AFTER_COMPACT = ("After /compact the plugin asks which detail level of this session's history to "
+                 "import, as usual; the hand-over is the primary source.\n")
 
 
 def effective_window(measured_tokens=None, model=None):
@@ -175,6 +215,7 @@ def main():
     transcript_path = hook_input.get("transcript_path")
     if not transcript_path or not Path(transcript_path).is_file():
         return
+    cycle_config.record_session(hook_input)
     tokens = current_context_tokens(transcript_path)
     if tokens is None:
         return
@@ -189,9 +230,21 @@ def main():
         return
     if marker.exists():
         return  # already reminded for this approach to the threshold
-    marker.write_text(str(tokens))
-    message = REMINDER.format(tokens_k=round(tokens / 1000), window_k=window // 1000,
-                              basis=basis, pct=round(tokens / window * 100))
+    config, handover = cycle_config.active(hook_input)
+    if config:
+        # remember when the hand-over was ordered: the Stop hook checks the file against it
+        marker.write_text(json.dumps({"tokens": tokens, "ts": time.time(), "handover": str(handover),
+                                      "cycle": config["cycle"], "nags": 0}))
+        command = "/clear" if config["cycle"] == "clear" else "/compact"
+        stamp_hint = "" if config.get("stamp") else " (`Stand: DD.MM.YYYY HH:MM · <commit>`)"
+        message = HANDOVER_REMINDER.format(
+            tokens_k=round(tokens / 1000), window_k=window // 1000, basis=basis,
+            pct=round(tokens / window * 100), handover=handover, stamp_hint=stamp_hint,
+            command=command, after=AFTER_CLEAR if command == "/clear" else AFTER_COMPACT)
+    else:
+        marker.write_text(str(tokens))
+        message = REMINDER.format(tokens_k=round(tokens / 1000), window_k=window // 1000,
+                                  basis=basis, pct=round(tokens / window * 100))
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse",
                                              "additionalContext": message}}))
 
