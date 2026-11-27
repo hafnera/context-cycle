@@ -1,11 +1,11 @@
 ---
 name: cycle-checkpoint
-description: Run the pre-compaction documentation checkpoint manually, at any context level — no need to wait for the automatic 80% trigger. Updates ALL project documentation (incl. architecture docs and learnings from mistakes), then ends the turn with a numbered next-steps list and asks the user to run /compact. Use when the user says "cycle checkpoint", "doc checkpoint", "mach einen doku-checkpoint", "sichere den session-stand", "persist the session knowledge now", "checkpoint before compact", or wants to compact soon and lose nothing.
+description: Run the pre-compaction documentation checkpoint manually, at any context level — no need to wait for the automatic 40% trigger. Updates ALL project documentation (incl. architecture docs and learnings from mistakes), then ends the turn with a numbered next-steps list and asks the user to run /compact. Use when the user says "cycle checkpoint", "doc checkpoint", "mach einen doku-checkpoint", "sichere den session-stand", "persist the session knowledge now", "checkpoint before compact", or wants to compact soon and lose nothing.
 ---
 
 # Manual Documentation Checkpoint
 
-The same checkpoint the context-cycle plugin triggers automatically at 80% of the context window — run on demand. `<skill>` below stands for this skill's base directory (announced when the skill loads).
+The same checkpoint the context-cycle plugin triggers automatically at 40% of the context window — run on demand. `<skill>` below stands for this skill's base directory (announced when the skill loads).
 
 ## Steps
 
@@ -29,7 +29,7 @@ Mention the result (e.g. "~250k of 1000k tokens, 25%") in your final message so 
 python3 "<skill>/../cycle-context/hooks/pre_compact_docs_reminder.py" --mark
 ```
 
-This arms the once-per-cycle marker so the automatic 80% reminder stays silent until after the next compaction (the docs are fresh now — a second checkpoint order would be redundant).
+This arms the once-per-cycle marker so the automatic 40% reminder stays silent until after the next compaction (the docs are fresh now — a second checkpoint order would be redundant).
 
 ### 4. Stop and hand over
 

@@ -3,7 +3,7 @@
 checkpoint really rewrote the hand-over file before the turn ends.
 
 The PostToolUse reminder (pre_compact_docs_reminder.py) orders the hand-over
-at 80% context and records the time in the session's marker file. When the
+at 40% context and records the time in the session's marker file. When the
 agent ends its turn afterwards — the moment it asks the user for /clear or
 /compact — this hook compares the hand-over file against that time (mtime,
 or a stamp line at least that new). If the file was not rewritten, the turn

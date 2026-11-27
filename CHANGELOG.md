@@ -2,6 +2,9 @@
 
 All notable changes of the context-cycle plugin. Versions are the `version` in `.claude-plugin/plugin.json`; the plugin updater only offers an update when it changes.
 
+## 1.21.3 — 2026-11-27
+- Checkpoint threshold lowered from 80 % to 40 % of the context window (owner's instruction, 2026-11-27): `REMIND_FRACTION` default 0.4; the re-arm point follows (below 24 %). `DOC_REMINDER_FRACTION` still overrides it.
+
 ## 1.21.2 — 2026-11-27
 - Question notes: the offene-fragen mod's own take-over after `/clear` (0.23.0, ADR-0017) is a `system` entry of subtype `informational` in the new session's transcript ("offene-fragen: nach /clear <first result line>"), not a tool call; it is now rendered as `**Agent note (hh:mm) · questions taken over after /clear (by the mod):** …` and written back by `create`. The mod's other informational lines (window drawn) are ignored. `fragen_uebernehmen`'s first result line may end with "Wartende Antworten: …" (0.23.0); the note shows it unchanged.
 

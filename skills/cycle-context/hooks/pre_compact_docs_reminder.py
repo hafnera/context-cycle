@@ -32,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cycle_config  # noqa: E402
 
-REMIND_FRACTION = float(os.environ.get("DOC_REMINDER_FRACTION", "0.8"))
+REMIND_FRACTION = float(os.environ.get("DOC_REMINDER_FRACTION", "0.4"))
 # Context dropping below RESET_FRACTION * threshold means compaction happened.
 RESET_FRACTION = 0.6
 
@@ -182,7 +182,7 @@ def newest_session_of_cwd():
 
 def cli_mode(mode):
     """--status: print current context usage. --mark: arm the once-marker so
-    the automatic 80% reminder stays silent for the current cycle (used after
+    the automatic 40% reminder stays silent for the current cycle (used after
     a manual documentation checkpoint via the cycle-checkpoint skill)."""
     transcript = newest_session_of_cwd()
     if transcript is None:

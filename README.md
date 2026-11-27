@@ -12,7 +12,7 @@ Everything runs locally (Python 3, stdlib only, no dependencies). The only netwo
 - **`/cycle-context` skill** — import a previous session as condensed context: your messages, the main agent's progress notes and final answer per turn, the messages it exchanged with other Claude sessions, its changes to its list of open questions for you (offene-fragen mod), and every subagent's result (summary + full report, labeled with the subagent's real name). No tool calls, tool results, code edits or thinking. You choose the detail level via a question card. A 25 MB session file becomes a readable transcript of a few hundred KB (or a few dozen KB at lower levels).
 - **Sessions that move between projects** — `create` turns the condensed extract of a session (any source) into a **new, real Claude Code session** in another project directory, built from the same structures a native session has: your messages become user messages, interjections become queued commands, the agent's notes and answers become assistant messages, every subagent result becomes an Agent tool call with its result plus the subagent's own transcript file, question-list changes become the same mod tool calls, and a preface names the origin and tells the new session to take over the source session's question list (`fragen_uebernehmen`; since offene-fragen 0.19.0 that also moves the archive silently and works across projects). Because the structure is native, the extractor, the detail levels and the whole compaction cycle work on the imported session exactly as on any other. Resume it there with `claude --resume <id>` (or pick "Imported: …" in `/resume`).
 - **`/cycle-checkpoint` skill** — the documentation checkpoint on demand: update all project docs (incl. architecture docs and learnings from mistakes), then stop with a numbered next-steps list and ask you to `/compact`.
-- **Pre-compaction checkpoint hook** (PostToolUse) — at 80% context usage the agent is told to run exactly that checkpoint by itself.
+- **Pre-compaction checkpoint hook** (PostToolUse) — at 40% context usage the agent is told to run exactly that checkpoint by itself.
 - **Post-compaction restore hook** (SessionStart, `compact`) — right after a compaction the agent is told to ask you which detail level to restore (with measured token sizes per level) and to import that from the session file on disk. The question is asked even if a project rule, a memory note or a message that arrived with the compaction seems to prescribe a level; sizes from an earlier compaction are recomputed when the skill runs later (slash command, reopened session, plugin update).
 
 ## How it works
@@ -20,7 +20,7 @@ Everything runs locally (Python 3, stdlib only, no dependencies). The only netwo
 ```mermaid
 flowchart TD
     A["1 · You and the agent work normally —<br/>tool calls gradually fill the context window"]
-    B["2 · Context reaches 80% ⚠<br/>A hook tells the agent: update ALL project docs now<br/>(incl. architecture docs + learnings from mistakes)"]
+    B["2 · Context reaches 40% ⚠<br/>A hook tells the agent: update ALL project docs now<br/>(incl. architecture docs + learnings from mistakes)"]
     C["3 · Agent stops on purpose and posts:<br/>✔ what was documented<br/>✔ key findings of the last tool result<br/>✔ numbered list of its planned next steps<br/>✔ “please run /compact now”"]
     D["4 · You type /compact —<br/>Claude Code shrinks the context to a summary"]
     E["5 · Hook: agent asks you which detail level to restore<br/>(Full / without subagent reports / final answers only / minimal, each with a token estimate;<br/>for final answers only: how many recent agent notes to keep) and imports it from the session file"]
@@ -95,7 +95,7 @@ By default the cycle is *checkpoint → `/compact` → restore the history*. A p
 
 What the hooks then do:
 
-- **80 % (PostToolUse):** the checkpoint additionally orders the hand-over file to be written completely (running task and state, agreements with other sessions, what lies with the user, numbered next steps, fresh pitfalls), its stamp updated and committed with the work, and asks the user for `/clear` (or `/compact`).
+- **40 % (PostToolUse):** the checkpoint additionally orders the hand-over file to be written completely (running task and state, agreements with other sessions, what lies with the user, numbered next steps, fresh pitfalls), its stamp updated and committed with the work, and asks the user for `/clear` (or `/compact`).
 - **End of turn (Stop):** if the hand-over was not rewritten since that order (mtime or stamp), the turn continues with the feedback to write it first — at most twice per cycle.
 - **Session start (startup, resume, clear, fork):** path, stamp, last change and warnings of the hand-over (missing file, stamp older than the file by more than a day, with `load: plugin` also "older than the newest commit"); after `/clear` the previous session of the same Claude Code process is **offered** (title, id, transcript size), never imported — if the user asks, the skill asks the detail level as usual.
 - **`/compact`** keeps working exactly as today (detail-level question and import), with a hint that the hand-over is the primary source.
@@ -152,7 +152,7 @@ python3 $X create <id> --all-projects --into ~/Coding/ProjectB  # a NEW session 
 
 | Parameter | Where | Default | Effect |
 |---|---|---|---|
-| `REMIND_FRACTION` / env `DOC_REMINDER_FRACTION` | `pre_compact_docs_reminder.py` | `0.8` | fraction of the window that triggers the checkpoint |
+| `REMIND_FRACTION` / env `DOC_REMINDER_FRACTION` | `pre_compact_docs_reminder.py` | `0.4` | fraction of the window that triggers the checkpoint (owner's setting since 2026-11-27; was 0.8) |
 | `RESET_FRACTION` | `pre_compact_docs_reminder.py` | `0.6` | re-arm threshold after compaction |
 | `RESTORE_MODE` | `on_compact.py` | `"ask"` | `"ask"` injects the detail-level instruction; `"full"` injects the whole transcript unasked (chunked) |
 | `autoCompactWindow` | `~/.claude/settings.json` | unset | basis for auto-compact and the checkpoint threshold when set |
